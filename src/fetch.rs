@@ -132,10 +132,10 @@ impl Fetcher {
     fn download(&self, url: &str) -> Result<(Sha256, NamedTempFile)> {
         self.reporter.action("Downloading", url);
         let mut request = self.agent.get(url);
-        if let Some(token) = &self.github_token {
-            if sends_github_token(url) {
-                request = request.header("Authorization", format!("Bearer {token}"));
-            }
+        if let Some(token) = &self.github_token
+            && sends_github_token(url)
+        {
+            request = request.header("Authorization", format!("Bearer {token}"));
         }
         let response = request
             .call()

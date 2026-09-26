@@ -1,7 +1,9 @@
+pub mod archive;
 pub mod cli;
 pub mod digest;
 pub mod fetch;
 pub mod fsutil;
+pub mod layout;
 pub mod manifest;
 pub mod project;
 pub mod report;

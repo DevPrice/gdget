@@ -2,7 +2,7 @@
 name = "gdget"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Install pinned Godot addon dependencies from a committed manifest"
 
 [dependencies]
@@ -14,6 +14,7 @@ sha2 = "0.11.0"
 tempfile = "3.27.0"
 toml_edit = "0.25.15"
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
