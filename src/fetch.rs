@@ -138,16 +138,41 @@ impl Fetcher {
         Ok((sha256, self.store(temp, &sha256)?))
     }
 
-    fn download(&self, url: &str) -> Result<(Sha256, NamedTempFile)> {
-        self.reporter.action("Downloading", url);
+    /// Reads a small response, such as an API reply, failing if it exceeds `max_bytes`.
+    pub fn fetch_bytes(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let response = self
+            .get(url)
+            .with_context(|| format!("cannot fetch {url}"))?;
+        let mut bytes = Vec::new();
+        response
+            .into_body()
+            .into_reader()
+            .take(max_bytes + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("cannot fetch {url}"))?;
+        if bytes.len() as u64 > max_bytes {
+            bail!(
+                "cannot fetch {url}: the response is larger than {} KiB",
+                max_bytes >> 10
+            );
+        }
+        Ok(bytes)
+    }
+
+    fn get(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         let mut request = self.agent.get(url);
         if let Some(token) = &self.github_token
             && sends_github_token(url)
         {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
-        let response = request
-            .call()
+        request.call()
+    }
+
+    fn download(&self, url: &str) -> Result<(Sha256, NamedTempFile)> {
+        self.reporter.action("Downloading", url);
+        let response = self
+            .get(url)
             .with_context(|| format!("cannot download {url}"))?;
 
         let temp_dir = self.cache.temp_dir();

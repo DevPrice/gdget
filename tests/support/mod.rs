@@ -71,6 +71,7 @@ impl Fixture {
         let mut cmd = assert_cmd::Command::cargo_bin("gdget").unwrap();
         cmd.current_dir(self.root())
             .env("GDGET_CACHE_DIR", self.cache.path())
+            .env("GDGET_STORE_URL", self.server.url(""))
             .env("NO_COLOR", "1")
             .env_remove("GITHUB_ACTIONS")
             .env_remove("GITHUB_TOKEN");

@@ -153,9 +153,7 @@ pub(crate) fn resolve(
     }
 
     let root = ArchivePath::root();
-    let bases: Vec<ArchivePath> = std::iter::once(root.clone())
-        .chain(wrapper_folder(tree))
-        .collect();
+    let bases = bases(tree);
 
     for base in &bases {
         let candidate = base.join("addons").join(name.as_str());
@@ -173,17 +171,7 @@ pub(crate) fn resolve(
         return Ok(found(root));
     }
 
-    let others: Vec<ArchivePath> = bases
-        .iter()
-        .map(|base| base.join("addons"))
-        .flat_map(|addons| {
-            tree.children(addons.segments())
-                .into_iter()
-                .filter(|e| e.is_dir)
-                .map(move |e| addons.join(&e.name))
-        })
-        .collect();
-    match others.as_slice() {
+    match addon_folders(tree, &bases).as_slice() {
         [only] => Ok(Resolved {
             path: only.clone(),
             warning: Some(format!(
@@ -220,6 +208,34 @@ pub(crate) fn resolve(
                 .join(", ")
         ),
     }
+}
+
+/// The name of the only folder under `addons/`, at the root or in a single wrapper folder.
+pub(crate) fn single_addon_name(tree: &dyn Tree) -> Option<String> {
+    match addon_folders(tree, &bases(tree)).as_slice() {
+        [only] => only.segments().last().cloned(),
+        _ => None,
+    }
+}
+
+/// The root, then the wrapper folder if there is one.
+fn bases(tree: &dyn Tree) -> Vec<ArchivePath> {
+    std::iter::once(ArchivePath::root())
+        .chain(wrapper_folder(tree))
+        .collect()
+}
+
+fn addon_folders(tree: &dyn Tree, bases: &[ArchivePath]) -> Vec<ArchivePath> {
+    bases
+        .iter()
+        .map(|base| base.join("addons"))
+        .flat_map(|addons| {
+            tree.children(addons.segments())
+                .into_iter()
+                .filter(|e| e.is_dir)
+                .map(move |e| addons.join(&e.name))
+        })
+        .collect()
 }
 
 fn found(path: ArchivePath) -> Resolved {
@@ -355,6 +371,18 @@ mod tests {
         let err = error(&["src/a.gd", "docs/", "README.md"], "c");
         assert!(err.contains("cannot find the addon folder"), "{err}");
         assert!(err.contains("README.md, docs/, src/"), "{err}");
+    }
+
+    #[test]
+    fn single_addon_name_needs_exactly_one_addons_folder() {
+        let name = |files: &[&str]| single_addon_name(&tree(files));
+        assert_eq!(name(&["addons/slang/plugin.cfg"]).as_deref(), Some("slang"));
+        assert_eq!(
+            name(&["w/README.md", "w/addons/slang/x.gdextension"]).as_deref(),
+            Some("slang")
+        );
+        assert_eq!(name(&["addons/a/plugin.cfg", "addons/b/plugin.cfg"]), None);
+        assert_eq!(name(&["plugin.cfg"]), None);
     }
 
     #[test]

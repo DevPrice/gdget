@@ -18,6 +18,7 @@ mod project;
 pub mod report;
 mod state;
 mod status;
+pub mod store;
 mod sync;
 
 use anyhow::Context;
@@ -58,13 +59,13 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
         ),
         Command::Add {
             name,
-            url,
+            source,
             path,
             version_label,
         } => edit::add(
             &project,
-            &name,
-            &url,
+            name.as_ref(),
+            &source,
             path.as_ref(),
             version_label,
             reporter,

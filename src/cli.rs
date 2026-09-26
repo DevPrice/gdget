@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 
 use crate::manifest::{AddonName, ArchivePath, check_text, check_url};
+use crate::store::StoreRef;
 
 /// Install pinned Godot addon dependencies from addons.toml.
 #[derive(Debug, Parser)]
@@ -30,19 +32,22 @@ pub enum Command {
     },
 
     /// Download an addon, pin its hash in the manifest, and install it.
+    #[command(allow_missing_positional = true)]
     Add {
-        /// Install folder name: the addon installs to addons/<NAME>/.
-        name: AddonName,
+        /// Install folder name: the addon installs to addons/<NAME>/. Defaults to the
+        /// archive's addons/ folder name.
+        name: Option<AddonName>,
 
-        /// URL of the addon zip.
-        #[arg(value_parser = parse_url)]
-        url: String,
+        /// URL of the addon zip, or an Asset Store asset as PUBLISHER/ASSET[@VERSION]
+        /// (latest stable release if VERSION is omitted).
+        source: AddonSource,
 
         /// Folder inside the archive to install, if auto-detection can't decide.
         #[arg(long)]
         path: Option<ArchivePath>,
 
-        /// Display-only version label to record in the manifest.
+        /// Display-only version label to record in the manifest. Defaults to the Asset
+        /// Store release's version.
         #[arg(long = "version-label", value_name = "LABEL", value_parser = parse_text)]
         version_label: Option<String>,
     },
@@ -57,8 +62,24 @@ pub enum Command {
     Status,
 }
 
-fn parse_url(url: &str) -> anyhow::Result<String> {
-    check_url(url).map(|()| url.to_owned())
+/// Where `add` gets an addon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddonSource {
+    Url(String),
+    Store(StoreRef),
+}
+
+impl FromStr for AddonSource {
+    type Err = anyhow::Error;
+
+    fn from_str(source: &str) -> anyhow::Result<Self> {
+        if source.contains("://") {
+            check_url(source)?;
+            Ok(Self::Url(source.to_owned()))
+        } else {
+            source.parse().map(Self::Store)
+        }
+    }
 }
 
 fn parse_text(text: &str) -> anyhow::Result<String> {
