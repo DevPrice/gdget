@@ -49,13 +49,35 @@ impl fmt::Display for AddonName {
     }
 }
 
-/// Windows refuses these device names as folder names, with or without an extension.
-fn is_reserved_on_windows(name: &str) -> bool {
+/// Windows opens these device names, with or without an extension, instead of a file.
+pub(crate) fn is_reserved_on_windows(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit())
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem.as_bytes()[3].is_ascii_digit())
+}
+
+/// Checks an addon source URL. Whitespace and control characters are refused because
+/// URLs are echoed to CI logs, where a newline could inject a GitHub workflow command.
+pub fn check_url(url: &str) -> Result<()> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("the URL {url:?} contains whitespace or control characters");
+    }
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        bail!("`{url}` is not an http(s) URL");
+    }
+    Ok(())
+}
+
+/// Checks free text that gdget prints, such as a version label, for control characters.
+pub fn check_text(text: &str) -> Result<()> {
+    if text.chars().any(char::is_control) {
+        bail!("{text:?} contains control characters");
+    }
+    Ok(())
 }
 
 /// A relative, `/`-separated folder inside an archive; no segments means the archive root.
@@ -82,6 +104,7 @@ impl FromStr for ArchivePath {
     type Err = anyhow::Error;
 
     fn from_str(path: &str) -> Result<Self> {
+        check_text(path)?;
         if path.contains('\\') {
             bail!("invalid path `{path}`: use `/` as the separator");
         }
@@ -176,8 +199,10 @@ fn parse_addon(name: &str, table: &dyn TableLike) -> Result<Addon> {
         bail!("unknown key `addons.{name}.{key}` ({NEWER_VERSION_HINT})");
     }
     let url = get("url")?.ok_or_else(|| anyhow!("`addons.{name}` is missing `url`"))?;
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        bail!("`addons.{name}.url` must be an http(s) URL, got `{url}`");
+    check_url(url).with_context(|| format!("invalid `addons.{name}.url`"))?;
+    let version = get("version")?;
+    if let Some(version) = version {
+        check_text(version).with_context(|| format!("invalid `addons.{name}.version`"))?;
     }
     let sha256 = get("sha256")?
         .ok_or_else(|| {
@@ -190,7 +215,7 @@ fn parse_addon(name: &str, table: &dyn TableLike) -> Result<Addon> {
         .transpose()
         .with_context(|| format!("invalid `addons.{name}.path`"))?;
     Ok(Addon {
-        version: get("version")?.map(str::to_owned),
+        version: version.map(str::to_owned),
         source: Source::Url {
             url: url.to_owned(),
             sha256,
@@ -231,6 +256,7 @@ impl Overrides {
                     .as_str()
                     .filter(|dir| !dir.is_empty())
                     .ok_or_else(|| anyhow!("`overrides.{name}` must be a directory path"))?;
+                check_text(dir).with_context(|| format!("invalid `overrides.{name}`"))?;
                 overrides.addons.insert(name.parse()?, PathBuf::from(dir));
             }
         }
@@ -390,10 +416,26 @@ mod tests {
         let err = error(manifest(
             "[addons.a]\nurl = \"file:///a.zip\"\nsha256 = \"HASH\"",
         ));
-        assert!(err.contains("must be an http(s) URL"), "{err}");
+        assert!(err.contains("not an http(s) URL"), "{err}");
 
         let err = error(manifest("[addons.a]\nurl = 3\nsha256 = \"HASH\""));
         assert!(err.contains("`addons.a.url` must be a string"), "{err}");
+    }
+
+    #[test]
+    fn printed_fields_reject_control_characters() {
+        let err = error(manifest(
+            "[addons.a]\nurl = \"https://x/a.zip\\n::error::fake\"\nsha256 = \"HASH\"",
+        ));
+        assert!(err.contains("invalid `addons.a.url`"), "{err}");
+        assert!(!err.contains('\n'), "{err}");
+
+        let err = error(manifest(
+            "[addons.a]\nurl = \"https://x/a.zip\"\nsha256 = \"HASH\"\nversion = \"\\u001b[31m\"",
+        ));
+        assert!(err.contains("invalid `addons.a.version`"), "{err}");
+
+        assert!(Overrides::parse("[overrides]\na = \"x\\ny\"").is_err());
     }
 
     #[test]

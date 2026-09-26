@@ -20,6 +20,7 @@ fn add_pins_the_hash_and_detected_path_then_installs() {
         .args(["add", "slang", &url, "--version-label", "1.0.0"]));
     assert_eq!(out.code, 0, "{out:?}");
     assert!(out.stdout.contains("Pinned slang 1.0.0"), "{out:?}");
+    assert!(out.stderr.contains("is not https"), "{out:?}");
     assert!(out.stdout.contains("Installed slang"), "{out:?}");
     assert_eq!(fx.read("addons/slang/slang.gdextension"), "[configuration]");
 
@@ -95,12 +96,24 @@ fn add_rejects_bad_names_and_urls() {
     let out = run(fx
         .gdget()
         .args(["add", "../evil", "https://example.com/a.zip"]));
-    assert_eq!(out.code, 1, "{out:?}");
+    assert_eq!(out.code, 2, "{out:?}");
     assert!(out.stderr.contains("invalid addon name"), "{out:?}");
 
     let out = run(fx.gdget().args(["add", "a", "file:///a.zip"]));
-    assert_eq!(out.code, 1, "{out:?}");
+    assert_eq!(out.code, 2, "{out:?}");
     assert!(out.stderr.contains("not an http(s) URL"), "{out:?}");
+
+    let out = run(fx
+        .gdget()
+        .args(["add", "a", "https://x/a.zip\n::error::fake"]));
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(out.stderr.contains("control characters"), "{out:?}");
+
+    let out = run(fx
+        .gdget()
+        .args(["add", "a", "https://x/a.zip", "--path", "../up"]));
+    assert_eq!(out.code, 2, "{out:?}");
+    assert_eq!(fx.server.requests().len(), 0);
 }
 
 #[test]

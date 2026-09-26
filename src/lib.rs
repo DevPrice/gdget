@@ -58,7 +58,7 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
             &project,
             &name,
             &url,
-            path.as_deref(),
+            path.as_ref(),
             version_label,
             reporter,
         ),

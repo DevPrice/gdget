@@ -6,7 +6,7 @@ use zip::ZipArchive;
 
 use crate::digest::{Sha256, copy_hashed};
 use crate::layout::EntryTree;
-use crate::manifest::ArchivePath;
+use crate::manifest::{ArchivePath, is_reserved_on_windows};
 
 /// A file written by [`Archive::extract`], relative to the destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,13 @@ impl Archive {
             if relative.is_empty() {
                 continue;
             }
+            check_portable(relative).with_context(|| {
+                format!(
+                    "cannot extract `{}` from {}",
+                    relative.join("/"),
+                    self.path.display()
+                )
+            })?;
             let out = relative
                 .iter()
                 .fold(dest.to_owned(), |path, s| path.join(s));
@@ -108,11 +115,14 @@ impl Archive {
 }
 
 /// Splits a zip entry name into path segments, rejecting anything that could escape the
-/// destination or means different things on different platforms.
+/// destination. Control characters are refused too, since names end up in log output.
 fn entry_segments(name: &str) -> Result<Vec<String>> {
+    if name.chars().any(char::is_control) {
+        bail!("{name:?} contains control characters");
+    }
     let normalized = name.replace('\\', "/");
-    if normalized.starts_with('/') || normalized.contains(':') || normalized.contains('\0') {
-        bail!("`{name}` is an absolute or invalid path");
+    if normalized.starts_with('/') || normalized.contains(':') {
+        bail!("`{name}` is an absolute path");
     }
     let mut segments = Vec::new();
     for segment in normalized.split('/') {
@@ -126,6 +136,24 @@ fn entry_segments(name: &str) -> Result<Vec<String>> {
         bail!("`{name}` is an empty path");
     }
     Ok(segments)
+}
+
+/// Refuses names Windows would silently change or treat as devices: trailing dots and
+/// spaces are stripped (so `a.` and `a` collide), and `CON`, `NUL`, `COM1`... open devices
+/// on Windows 10. Applied everywhere so an addon installs the same on every platform.
+fn check_portable(relative: &[String]) -> Result<()> {
+    for segment in relative {
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            bail!("`{segment}` ends with a dot or space, which Windows strips");
+        }
+        if segment.contains(['<', '>', '"', '|', '?', '*']) {
+            bail!("`{segment}` contains a character Windows does not allow in file names");
+        }
+        if is_reserved_on_windows(segment) {
+            bail!("`{segment}` is a reserved device name on Windows");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -230,6 +258,8 @@ mod tests {
             "/abs.gd",
             "C:/win.gd",
             "a\\..\\..\\b",
+            "a/\u{1b}]8;;x\u{7}.gd",
+            "a/line\nbreak.gd",
         ] {
             let temp = tempfile::tempdir().unwrap();
             let zip = write_zip(temp.path(), &[Item::File(name, b"x")]);
@@ -239,6 +269,33 @@ mod tests {
                 "{name}: {err:#}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_names_windows_would_alter_only_where_extracted() {
+        for name in ["a/c./d.gd", "a/trail /x.gd", "a/CON", "a/aux.gd", "a/q?.gd"] {
+            let temp = tempfile::tempdir().unwrap();
+            let zip = write_zip(
+                temp.path(),
+                &[Item::File(name, b"x"), Item::File("b/COM1.txt", b"x")],
+            );
+            let mut archive = Archive::open(&zip).expect(name);
+            let dest = temp.path().join("out");
+            let err = archive
+                .extract(&"a".parse().unwrap(), &dest)
+                .expect_err(name);
+            assert!(format!("{err:#}").contains("Windows"), "{name}: {err:#}");
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let zip = write_zip(
+            temp.path(),
+            &[Item::File("a/ok.gd", b"x"), Item::File("docs/aux.md", b"x")],
+        );
+        Archive::open(&zip)
+            .unwrap()
+            .extract(&"a".parse().unwrap(), &temp.path().join("out"))
+            .unwrap();
     }
 
     #[test]
