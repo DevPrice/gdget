@@ -9,6 +9,7 @@ pub mod digest;
 mod edit;
 pub mod fetch;
 mod fsutil;
+pub mod git;
 mod install;
 mod layout;
 pub mod link;

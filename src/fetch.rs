@@ -31,7 +31,14 @@ impl Cache {
         self.dir.join("sha256").join(format!("{sha256}.zip"))
     }
 
-    fn temp_dir(&self) -> PathBuf {
+    /// The bare repository that caches commits fetched from `url`.
+    pub fn git_repo_path(&self, url: &str) -> PathBuf {
+        self.dir
+            .join("git")
+            .join(format!("{}.git", Sha256::of_bytes(url.as_bytes())))
+    }
+
+    pub(crate) fn temp_dir(&self) -> PathBuf {
         self.dir.join("tmp")
     }
 }
