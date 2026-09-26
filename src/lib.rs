@@ -5,6 +5,7 @@ pub mod fetch;
 pub mod fsutil;
 pub mod layout;
 pub mod manifest;
+pub mod marker;
 pub mod project;
 pub mod report;
 
