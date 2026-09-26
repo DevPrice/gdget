@@ -57,15 +57,20 @@ pub fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Installed>
         return Ok(Installed::Missing);
     };
     if meta.file_type().is_symlink() {
-        return Ok(Installed::Link {
-            source: link::target(dir)?,
-            owned: state.links.contains_key(name),
-        });
+        let source = link::target(dir)?;
+        let owned = state
+            .links
+            .get(name)
+            .is_some_and(|recorded| same_dir(recorded, &source));
+        return Ok(Installed::Link { source, owned });
     }
     if !meta.is_dir() {
         return Ok(Installed::Unowned);
     }
-    Ok(Marker::read(dir)?.map_or(Installed::Unowned, Installed::Copy))
+    Ok(match Marker::read(dir)? {
+        Some(marker) if marker.name == *name => Installed::Copy(marker),
+        _ => Installed::Unowned,
+    })
 }
 
 /// Whether an installed copy is exactly what the manifest pins.
@@ -96,6 +101,12 @@ pub fn resolve_override(
         .fold(root, |path, segment| path.join(segment));
     let source = std::path::absolute(&source)
         .with_context(|| format!("cannot resolve {}", source.display()))?;
+    if source.to_str().is_none() {
+        bail!(
+            "the override path {} is not valid UTF-8, which gdget cannot record",
+            source.display()
+        );
+    }
     Ok((source, resolved.warning))
 }
 
@@ -448,7 +459,7 @@ fn install_copy(
     let staged = workspace.stage(name.as_str())?;
     let files = archive.extract(&resolved.path, &staged.path())?;
     let Source::Url { url, sha256 } = &addon.source;
-    Marker::new(url, *sha256, resolved.path, &files).write(&staged.path())?;
+    Marker::new(name, url, *sha256, resolved.path, &files).write(&staged.path())?;
     workspace.swap_in(staged, dir)
 }
 

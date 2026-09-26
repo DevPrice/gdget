@@ -50,12 +50,13 @@ impl State {
             .set_prefix("# Written by gdget. Do not edit.\n");
         let mut links = Table::new();
         for (name, target) in &self.links {
-            links.insert(name.as_str(), value(target.to_string_lossy().as_ref()));
+            let target = target
+                .to_str()
+                .ok_or_else(|| anyhow!("link target {} is not UTF-8", target.display()))?;
+            links.insert(name.as_str(), value(target));
         }
         doc["links"] = Item::Table(links);
         let path = state_dir.join(STATE_FILE);
-        std::fs::create_dir_all(state_dir)
-            .with_context(|| format!("cannot create {}", state_dir.display()))?;
         crate::fsutil::write_atomic(&path, doc.to_string().as_bytes())
             .with_context(|| format!("cannot write {}", path.display()))
     }
@@ -76,6 +77,7 @@ mod tests {
             "godot-slang".parse().unwrap(),
             PathBuf::from("C:\\dev\\godot-slang\\addons\\godot-slang"),
         );
+        std::fs::create_dir(&dir).unwrap();
         state.save(&dir).unwrap();
         assert_eq!(State::load(&dir).unwrap(), state);
     }

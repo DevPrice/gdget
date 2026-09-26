@@ -6,7 +6,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::archive::ExtractedFile;
 use crate::digest::Sha256;
-use crate::manifest::ArchivePath;
+use crate::manifest::{AddonName, ArchivePath};
 
 /// Written into every addon folder gdget installs; its presence is what makes the folder
 /// gdget's to replace or remove.
@@ -16,6 +16,9 @@ const FORMAT: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
+    /// The folder name it was installed as. A copied or renamed folder carries a marker
+    /// naming another addon and must not be treated as gdget's.
+    pub name: AddonName,
     pub url: String,
     pub sha256: Sha256,
     /// The archive folder that was installed, after layout resolution.
@@ -42,8 +45,15 @@ impl std::fmt::Display for Change {
 }
 
 impl Marker {
-    pub fn new(url: &str, sha256: Sha256, path: ArchivePath, files: &[ExtractedFile]) -> Self {
+    pub fn new(
+        name: &AddonName,
+        url: &str,
+        sha256: Sha256,
+        path: ArchivePath,
+        files: &[ExtractedFile],
+    ) -> Self {
         Self {
+            name: name.clone(),
             url: url.to_owned(),
             sha256,
             path,
@@ -91,6 +101,7 @@ impl Marker {
             })
             .collect::<Result<_>>()?;
         Ok(Self {
+            name: string("name")?.parse()?,
             url: string("url")?.to_owned(),
             sha256: string("sha256")?.parse()?,
             path: string("path")?.parse()?,
@@ -103,6 +114,7 @@ impl Marker {
         doc.decor_mut()
             .set_prefix("# Written by gdget to track this install. Do not edit.\n");
         doc["format"] = value(FORMAT);
+        doc["name"] = value(self.name.as_str());
         doc["url"] = value(&self.url);
         doc["sha256"] = value(self.sha256.to_string());
         doc["path"] = value(self.path.to_string());
@@ -199,6 +211,7 @@ mod tests {
             });
         }
         let marker = Marker::new(
+            &"a".parse().unwrap(),
             "https://example.com/a.zip",
             Sha256::of_bytes(b"archive"),
             "addons/a".parse().unwrap(),

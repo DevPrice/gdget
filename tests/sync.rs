@@ -239,6 +239,45 @@ fn warns_when_installed_addons_are_not_gitignored() {
 }
 
 #[test]
+fn a_copied_install_is_not_treated_as_gdgets() {
+    let fx = Fixture::new();
+    fx.write_manifest(&[&fx.publish("a", "a.zip", &[PLUGIN])]);
+    assert_eq!(run(fx.gdget().arg("sync")).code, 0);
+    fx.write(
+        "addons/a-backup/plugin.cfg",
+        &fx.read("addons/a/plugin.cfg"),
+    );
+    fx.write(
+        "addons/a-backup/.gdget.toml",
+        &fx.read("addons/a/.gdget.toml"),
+    );
+
+    let out = run(fx.gdget().args(["sync", "--force"]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(fx.addon("a-backup").join("plugin.cfg").exists(), "{out:?}");
+}
+
+#[test]
+fn a_repointed_link_is_not_treated_as_gdgets() {
+    let fx = Fixture::new();
+    fx.write_manifest(&[""]);
+    fx.write("dev/a/plugin.cfg", "dev");
+    fx.write("mine/a/plugin.cfg", "mine");
+    fx.write("addons.local.toml", "[overrides]\na = \"dev/a\"\n");
+    assert_eq!(run(fx.gdget().arg("sync")).code, 0);
+
+    gdget::link::remove(&fx.addon("a")).unwrap();
+    gdget::link::create(&fx.root().join("mine").join("a"), &fx.addon("a")).unwrap();
+    std::fs::remove_file(fx.root().join("addons.local.toml")).unwrap();
+
+    let out = run(fx.gdget().arg("sync"));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(!out.stdout.contains("Removed a"), "{out:?}");
+    assert_eq!(fx.read("addons/a/plugin.cfg"), "mine");
+    gdget::link::remove(&fx.addon("a")).unwrap();
+}
+
+#[test]
 fn refuses_an_addons_folder_that_is_a_link() {
     let fx = Fixture::new();
     fx.write_manifest(&[&fx.publish("confd", "a.zip", &[("plugin.cfg", "payload")])]);
