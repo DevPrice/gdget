@@ -1,7 +1,8 @@
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tempfile::TempDir;
 
 use crate::link;
@@ -9,10 +10,11 @@ use crate::link;
 const TRASH_PREFIX: &str = "old-";
 
 /// gdget's scratch space under `.gdget/`, next to `addons/` so every rename between them
-/// stays on one volume and is atomic.
+/// stays on one volume and is atomic. Holds an exclusive lock on the project while alive.
 pub struct Workspace {
     staging: PathBuf,
     trash: PathBuf,
+    _lock: File,
 }
 
 /// A folder being prepared for install. Dropping it without [`Workspace::swap_in`]
@@ -29,35 +31,36 @@ impl Staged {
 }
 
 impl Workspace {
-    /// Creates `.gdget/` if needed and clears what an interrupted run left in it. Rescued
-    /// folders are kept for the user to recover.
+    /// Creates `.gdget/` if needed, locks the project against other gdget runs, and
+    /// clears what an interrupted run left behind. Rescued folders are kept for the user
+    /// to recover.
     pub fn prepare(state_dir: &Path) -> Result<Self> {
+        ensure_real_dir(state_dir)?;
+        let lock = lock_project(state_dir)?;
         let workspace = Self {
             staging: state_dir.join("staging"),
             trash: state_dir.join("trash"),
+            _lock: lock,
         };
-        let _ = std::fs::remove_dir_all(&workspace.staging);
-        if let Ok(entries) = std::fs::read_dir(&workspace.trash) {
-            for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(TRASH_PREFIX)
-                {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
         for dir in [&workspace.staging, &workspace.trash] {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("cannot create {}", dir.display()))?;
+            ensure_real_dir(dir)?;
         }
+        remove_entries(&workspace.staging, |_| true);
+        remove_entries(&workspace.trash, |name| name.starts_with(TRASH_PREFIX));
         // Hidden folders are already skipped by Godot's importer; this makes it explicit
-        // in case the editor has the project open while a sync stages files.
+        // in case the editor has the project open while a sync stages files. create_new
+        // refuses to write through a planted symlink.
         let gdignore = state_dir.join(".gdignore");
-        if !gdignore.exists() {
-            std::fs::write(&gdignore, "")
-                .with_context(|| format!("cannot write {}", gdignore.display()))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&gdignore)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot write {}", gdignore.display()));
+            }
         }
         Ok(workspace)
     }
@@ -160,6 +163,56 @@ impl Workspace {
     }
 }
 
+/// Creates `dir` if it is missing and refuses anything but a real directory there. A
+/// symlink or junction committed in place of `addons/` or `.gdget/` would otherwise
+/// redirect gdget's writes and deletes outside the project.
+pub fn ensure_real_dir(dir: &Path) -> Result<()> {
+    match dir.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => bail!(
+            "{} is a link; gdget only writes to a real folder there. Replace the link with \
+             a folder",
+            dir.display()
+        ),
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => bail!("{} is not a folder", dir.display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir(dir).with_context(|| format!("cannot create {}", dir.display()))
+        }
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    }
+}
+
+/// Best effort: anything that can't be deleted now is retried on the next run.
+fn remove_entries(dir: &Path, selected: impl Fn(&str) -> bool) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if selected(&entry.file_name().to_string_lossy()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+fn lock_project(state_dir: &Path) -> Result<File> {
+    let path = state_dir.join("lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => {
+            bail!("another gdget is already running in this project; wait for it to finish")
+        }
+        Err(TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("cannot lock {}", path.display()))
+        }
+    }
+}
+
 /// What `take_old` moved out of the way.
 enum Old {
     Dir(TempDir),
@@ -250,6 +303,43 @@ mod tests {
         assert!(!state.join("trash").join("old-1").exists());
         assert!(state.join("trash").join("rescued-2").exists());
         assert!(state.join(".gdignore").is_file());
+    }
+
+    #[test]
+    fn refuses_a_linked_state_dir_and_leaves_the_target_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let elsewhere = temp.path().join("elsewhere");
+        fill(&elsewhere.join("staging").join("precious"), "keep");
+        let state = temp.path().join(".gdget");
+        link::create(&elsewhere, &state).unwrap();
+
+        let err = Workspace::prepare(&state).err().unwrap().to_string();
+        assert!(err.contains("is a link"), "{err}");
+        assert_eq!(read(&elsewhere.join("staging").join("precious")), "keep");
+        link::remove(&state).unwrap();
+    }
+
+    #[test]
+    fn only_one_workspace_per_project_at_a_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join(".gdget");
+        let first = Workspace::prepare(&state).unwrap();
+        let err = Workspace::prepare(&state).err().unwrap().to_string();
+        assert!(err.contains("another gdget is already running"), "{err}");
+        drop(first);
+        Workspace::prepare(&state).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_write_gdignore_through_a_planted_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join(".gdget");
+        std::fs::create_dir(&state).unwrap();
+        let victim = temp.path().join("victim");
+        std::os::unix::fs::symlink(&victim, state.join(".gdignore")).unwrap();
+        Workspace::prepare(&state).unwrap();
+        assert!(!victim.exists());
     }
 
     #[test]

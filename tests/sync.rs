@@ -239,6 +239,20 @@ fn warns_when_installed_addons_are_not_gitignored() {
 }
 
 #[test]
+fn refuses_an_addons_folder_that_is_a_link() {
+    let fx = Fixture::new();
+    fx.write_manifest(&[&fx.publish("confd", "a.zip", &[("plugin.cfg", "payload")])]);
+    let outside = tempfile::tempdir().unwrap();
+    gdget::link::create(outside.path(), &fx.root().join("addons")).unwrap();
+
+    let out = run(fx.gdget().arg("sync"));
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("is a link"), "{out:?}");
+    assert!(!outside.path().join("confd").exists());
+    gdget::link::remove(&fx.root().join("addons")).unwrap();
+}
+
+#[test]
 fn missing_manifest_is_an_error() {
     let fx = Fixture::new();
     let out = run(fx.gdget().arg("sync"));

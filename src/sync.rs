@@ -5,8 +5,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::Outcome;
 use crate::archive::Archive;
+use crate::digest::Sha256;
 use crate::fetch::{Cache, Fetcher};
-use crate::install::Workspace;
+use crate::install::{Workspace, ensure_real_dir};
 use crate::layout::{self, DirTree};
 use crate::link;
 use crate::manifest::{Addon, AddonName, Manifest, OVERRIDES_FILE, Overrides, Source};
@@ -105,17 +106,29 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// What planning found at `addons/<name>`, checked again right before the step runs so a
+/// folder that appears or changes during a slow download is never replaced unseen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Seen {
+    Missing,
+    Copy(Sha256),
+    Link(PathBuf),
+}
+
 #[derive(Debug)]
 enum Step {
     UpToDate,
     Install {
         addon: Addon,
-        replacing: bool,
+        seen: Seen,
     },
     Link {
         source: PathBuf,
+        seen: Seen,
     },
-    Remove,
+    Remove {
+        seen: Seen,
+    },
     /// Left alone because it has local changes; reported as a warning.
     Modified(Vec<Change>),
     /// Cannot proceed; reported as an error.
@@ -157,13 +170,19 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
     }
 
     let addons_dir = project.addons_dir();
-    std::fs::create_dir_all(&addons_dir)
-        .with_context(|| format!("cannot create {}", addons_dir.display()))?;
+    ensure_real_dir(&addons_dir)?;
     let workspace = Workspace::prepare(&project.state_dir())?;
     let mut failed = false;
     let mut changed = 0;
     for (name, step) in &steps {
         let dir = addons_dir.join(name.as_str());
+        if let Step::Install { seen, .. } | Step::Link { seen, .. } | Step::Remove { seen } = step
+            && let Err(e) = recheck(&dir, name, &state, seen, options.force)
+        {
+            reporter.error(format!("{name}: {e:#}"));
+            failed = true;
+            continue;
+        }
         let result = match step {
             Step::UpToDate => continue,
             Step::Modified(changes) => {
@@ -180,10 +199,14 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
                 failed = true;
                 continue;
             }
-            Step::Install { addon, replacing } => {
+            Step::Install { addon, seen } => {
                 install_copy(&workspace, &dir, name, addon, &archives[name], reporter).map(|()| {
                     state.links.remove(name);
-                    let verb = if *replacing { "Updated" } else { "Installed" };
+                    let verb = if *seen == Seen::Missing {
+                        "Installed"
+                    } else {
+                        "Updated"
+                    };
                     reporter.action(verb, label(name, addon));
                 })
             }
@@ -191,7 +214,7 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
                 state.links.insert(name.clone(), source.clone());
                 reporter.action("Linked", format!("{name} -> {}", source.display()));
             }),
-            Step::Remove => workspace.remove(&dir).map(|()| {
+            Step::Remove { .. } => workspace.remove(&dir).map(|()| {
                 state.links.remove(name);
                 reporter.action("Removed", name);
             }),
@@ -276,34 +299,49 @@ fn plan(
                             source: current,
                             owned: true,
                         } if same_dir(&current, &source) => Step::UpToDate,
-                        Installed::Link { owned: true, .. } | Installed::Missing => {
-                            Step::Link { source }
+                        Installed::Link {
+                            source: current,
+                            owned: true,
+                        } => Step::Link {
+                            source,
+                            seen: Seen::Link(current),
+                        },
+                        Installed::Missing => Step::Link {
+                            source,
+                            seen: Seen::Missing,
+                        },
+                        Installed::Copy(marker) => {
+                            let seen = Seen::Copy(marker.sha256);
+                            guard_changes(
+                                &marker,
+                                &dir,
+                                force,
+                                name,
+                                reporter,
+                                Step::Link { source, seen },
+                            )
                         }
-                        Installed::Copy(marker) => guard_changes(
-                            &marker,
-                            &dir,
-                            force,
-                            name,
-                            reporter,
-                            Step::Link { source },
-                        ),
                         Installed::Link { owned: false, .. } | Installed::Unowned => unowned(),
                     }
                 }
             }
         } else {
             let addon = &manifest.addons[*name];
-            let install = |replacing| Step::Install {
+            let install = |seen| Step::Install {
                 addon: addon.clone(),
-                replacing,
+                seen,
             };
             match installed {
                 Installed::Copy(marker) if is_current(&marker, addon) => Step::UpToDate,
                 Installed::Copy(marker) => {
-                    guard_changes(&marker, &dir, force, name, reporter, install(true))
+                    let step = install(Seen::Copy(marker.sha256));
+                    guard_changes(&marker, &dir, force, name, reporter, step)
                 }
-                Installed::Missing => install(false),
-                Installed::Link { owned: true, .. } => install(true),
+                Installed::Missing => install(Seen::Missing),
+                Installed::Link {
+                    source,
+                    owned: true,
+                } => install(Seen::Link(source)),
                 Installed::Link { owned: false, .. } | Installed::Unowned => unowned(),
             }
         };
@@ -328,9 +366,17 @@ fn plan(
         let dir = entry.path();
         let step = match inspect(&dir, &name, state) {
             Ok(Installed::Copy(marker)) => {
-                guard_changes(&marker, &dir, force, &name, reporter, Step::Remove)
+                let step = Step::Remove {
+                    seen: Seen::Copy(marker.sha256),
+                };
+                guard_changes(&marker, &dir, force, &name, reporter, step)
             }
-            Ok(Installed::Link { owned: true, .. }) => Step::Remove,
+            Ok(Installed::Link {
+                source,
+                owned: true,
+            }) => Step::Remove {
+                seen: Seen::Link(source),
+            },
             Ok(_) => continue,
             Err(e) => Step::Blocked(format!("{e:#}")),
         };
@@ -362,6 +408,30 @@ fn guard_changes(
     }
 }
 
+fn recheck(dir: &Path, name: &AddonName, state: &State, seen: &Seen, force: bool) -> Result<()> {
+    let unchanged = match (inspect(dir, name, state)?, seen) {
+        (Installed::Missing, Seen::Missing) => true,
+        (Installed::Copy(marker), Seen::Copy(sha256)) => {
+            marker.sha256 == *sha256 && (force || marker.changes(dir)?.is_empty())
+        }
+        (
+            Installed::Link {
+                source,
+                owned: true,
+            },
+            Seen::Link(planned),
+        ) => same_dir(&source, planned),
+        _ => false,
+    };
+    if !unchanged {
+        bail!(
+            "addons/{name} changed while gdget was running, so it was left as is. Run gdget \
+             sync again"
+        );
+    }
+    Ok(())
+}
+
 fn install_copy(
     workspace: &Workspace,
     dir: &Path,
@@ -389,19 +459,16 @@ fn report_check(steps: &BTreeMap<AddonName, Step>, reporter: Reporter) -> Outcom
             Step::UpToDate => continue,
             Step::Install {
                 addon,
-                replacing: false,
+                seen: Seen::Missing,
             } => reporter.action("Missing", label(name, addon)),
-            Step::Install {
-                addon,
-                replacing: true,
-            } => reporter.action("Outdated", label(name, addon)),
+            Step::Install { addon, .. } => reporter.action("Outdated", label(name, addon)),
             Step::Link { source, .. } => {
                 reporter.action(
                     "Override",
                     format!("{name} is not linked to {}", source.display()),
                 );
             }
-            Step::Remove => reporter.action("Extra", name),
+            Step::Remove { .. } => reporter.action("Extra", name),
             Step::Modified(changes) => {
                 reporter.warn(format!(
                     "addons/{name} has local changes ({})",
@@ -469,5 +536,26 @@ fn warn_unignored(project: &Project, names: &BTreeSet<&AddonName>, reporter: Rep
         reporter.warn(format!(
             "{path} is not ignored by git; add `/{path}` to .gitignore"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recheck_refuses_a_folder_that_appeared_after_planning() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("a");
+        let name: AddonName = "a".parse().unwrap();
+        let state = State::default();
+        recheck(&dir, &name, &state, &Seen::Missing, false).unwrap();
+
+        std::fs::create_dir(&dir).unwrap();
+        let err = recheck(&dir, &name, &state, &Seen::Missing, true).unwrap_err();
+        assert!(
+            err.to_string().contains("changed while gdget was running"),
+            "{err}"
+        );
     }
 }
