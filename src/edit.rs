@@ -191,9 +191,14 @@ const MAX_RELATIVE_UPS: usize = 2;
 /// separators when the two are near each other, as sibling checkouts are, so it survives
 /// moving both; otherwise absolute, since a long `../../..` chain breaks on any move.
 fn override_entry(root: &Path, target: &Path) -> Result<String> {
-    let root =
-        std::path::absolute(root).with_context(|| format!("cannot resolve {}", root.display()))?;
-    let path: PathBuf = relative_path(target, &root)
+    // Both sides are compared canonicalized: the project root comes from the working
+    // directory, which the OS reports with symlinks resolved (macOS's /var is
+    // /private/var), while PATH is taken as typed.
+    let canonical = |path: &Path| {
+        path.canonicalize()
+            .with_context(|| format!("cannot resolve {}", path.display()))
+    };
+    let path: PathBuf = relative_path(&canonical(target)?, &canonical(root)?)
         .filter(|path| {
             path.components()
                 .filter(|c| *c == Component::ParentDir)

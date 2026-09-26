@@ -126,6 +126,24 @@ fn distant_paths_are_recorded_as_absolute() {
     assert!(same_file(dir, &fx.root().join("dev").join("a")), "{text}");
 }
 
+#[cfg(unix)]
+#[test]
+fn paths_through_symlinks_are_still_relative() {
+    let fx = Fixture::new();
+    fx.write("dev/a/plugin.cfg", "dev build");
+    let aliases = tempfile::tempdir().unwrap();
+    let alias = aliases.path().join("project");
+    std::os::unix::fs::symlink(fx.root(), &alias).unwrap();
+
+    let out = run(fx.gdget().arg("link").arg(alias.join("dev").join("a")));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        overrides(&fx).contains("a = \"dev/a\""),
+        "{}",
+        overrides(&fx)
+    );
+}
+
 fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     a.canonicalize().unwrap() == b.canonicalize().unwrap()
 }
