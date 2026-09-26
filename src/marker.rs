@@ -6,21 +6,23 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::archive::ExtractedFile;
 use crate::digest::Sha256;
-use crate::manifest::{AddonName, ArchivePath};
+use crate::manifest::{AddonName, ArchivePath, Source};
 
 /// Written into every addon folder gdget installs; its presence is what makes the folder
 /// gdget's to replace or remove.
 pub(crate) const MARKER_FILE: &str = ".gdget.toml";
 
-const FORMAT: i64 = 1;
+/// Format 2 added git sources. Archive installs are still written as format 1 so an older
+/// gdget keeps recognizing them; it rejects format 2 and asks for a newer version.
+const URL_FORMAT: i64 = 1;
+const GIT_FORMAT: i64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Marker {
     /// The folder name it was installed as. A copied or renamed folder carries a marker
     /// naming another addon and must not be treated as gdget's.
     pub name: AddonName,
-    pub url: String,
-    pub sha256: Sha256,
+    pub source: Source,
     /// The archive folder that was installed, after layout resolution.
     pub path: ArchivePath,
     /// Every installed file, `/`-separated and relative to the addon folder.
@@ -47,15 +49,13 @@ impl std::fmt::Display for Change {
 impl Marker {
     pub(crate) fn new(
         name: &AddonName,
-        url: &str,
-        sha256: Sha256,
+        source: &Source,
         path: ArchivePath,
         files: &[ExtractedFile],
     ) -> Self {
         Self {
             name: name.clone(),
-            url: url.to_owned(),
-            sha256,
+            source: source.clone(),
             path,
             files: files
                 .iter()
@@ -80,13 +80,24 @@ impl Marker {
     fn parse(text: &str) -> Result<Self> {
         let doc: DocumentMut = text.parse()?;
         let format = doc.get("format").and_then(Item::as_integer);
-        if format != Some(FORMAT) {
-            bail!("unsupported marker format {format:?}; it may need a newer version of gdget");
-        }
         let string = |key: &str| {
             doc.get(key)
                 .and_then(Item::as_str)
                 .ok_or_else(|| anyhow!("missing `{key}`"))
+        };
+        let source = match format {
+            Some(URL_FORMAT) => Source::Url {
+                url: string("url")?.to_owned(),
+                sha256: string("sha256")?.parse()?,
+            },
+            Some(GIT_FORMAT) => Source::Git {
+                url: string("git")?.to_owned(),
+                reference: doc.get("ref").and_then(Item::as_str).map(str::to_owned),
+                rev: string("rev")?.parse()?,
+            },
+            _ => {
+                bail!("unsupported marker format {format:?}; it may need a newer version of gdget")
+            }
         };
         let files = doc
             .get("files")
@@ -102,8 +113,7 @@ impl Marker {
             .collect::<Result<_>>()?;
         Ok(Self {
             name: string("name")?.parse()?,
-            url: string("url")?.to_owned(),
-            sha256: string("sha256")?.parse()?,
+            source,
             path: string("path")?.parse()?,
             files,
         })
@@ -113,10 +123,27 @@ impl Marker {
         let mut doc = DocumentMut::new();
         doc.decor_mut()
             .set_prefix("# Written by gdget to track this install. Do not edit.\n");
-        doc["format"] = value(FORMAT);
-        doc["name"] = value(self.name.as_str());
-        doc["url"] = value(&self.url);
-        doc["sha256"] = value(self.sha256.to_string());
+        match &self.source {
+            Source::Url { url, sha256 } => {
+                doc["format"] = value(URL_FORMAT);
+                doc["name"] = value(self.name.as_str());
+                doc["url"] = value(url);
+                doc["sha256"] = value(sha256.to_string());
+            }
+            Source::Git {
+                url,
+                reference,
+                rev,
+            } => {
+                doc["format"] = value(GIT_FORMAT);
+                doc["name"] = value(self.name.as_str());
+                doc["git"] = value(url);
+                if let Some(reference) = reference {
+                    doc["ref"] = value(reference);
+                }
+                doc["rev"] = value(rev.as_str());
+            }
+        }
         doc["path"] = value(self.path.to_string());
         let mut files = Table::new();
         for (path, hash) in &self.files {
@@ -216,8 +243,10 @@ mod tests {
         }
         let marker = Marker::new(
             &"a".parse().unwrap(),
-            "https://example.com/a.zip",
-            Sha256::of_bytes(b"archive"),
+            &Source::Url {
+                url: "https://example.com/a.zip".into(),
+                sha256: Sha256::of_bytes(b"archive"),
+            },
             "addons/a".parse().unwrap(),
             &extracted,
         );
@@ -230,6 +259,25 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let marker = install(temp.path(), &[("plugin.cfg", "x"), ("bin/a b.dll", "y")]);
         assert_eq!(Marker::read(temp.path()).unwrap(), Some(marker));
+        let text = std::fs::read_to_string(temp.path().join(MARKER_FILE)).unwrap();
+        assert!(text.contains("format = 1\n"), "{text}");
+    }
+
+    #[test]
+    fn git_installs_round_trip_as_format_2() {
+        let temp = tempfile::tempdir().unwrap();
+        for reference in [Some("main".to_owned()), None] {
+            let mut marker = install(temp.path(), &[("a.gd", "code")]);
+            marker.source = Source::Git {
+                url: "git@github.com:o/r.git".into(),
+                reference,
+                rev: "a".repeat(40).parse().unwrap(),
+            };
+            marker.write(temp.path()).unwrap();
+            let text = std::fs::read_to_string(temp.path().join(MARKER_FILE)).unwrap();
+            assert!(text.contains("format = 2\n"), "{text}");
+            assert_eq!(Marker::read(temp.path()).unwrap(), Some(marker));
+        }
     }
 
     #[test]

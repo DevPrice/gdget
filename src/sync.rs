@@ -1,17 +1,19 @@
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use tempfile::TempPath;
 
 use crate::Outcome;
 use crate::archive::Archive;
-use crate::digest::Sha256;
 use crate::fetch::{Cache, Fetcher};
+use crate::git::{Git, GitRev};
 use crate::install::{Workspace, ensure_real_dir};
 use crate::layout::{self, DirTree};
 use crate::link;
 use crate::manifest::{
-    Addon, AddonName, MANIFEST_FILE, Manifest, OVERRIDES_FILE, Overrides, Source,
+    Addon, AddonName, MANIFEST_FILE, Manifest, OVERRIDES_FILE, Overrides, Pin, Source,
 };
 use crate::marker::{Change, Marker};
 use crate::project::Project;
@@ -79,8 +81,8 @@ pub(crate) fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Ins
 
 /// Whether an installed copy is exactly what the manifest pins.
 pub(crate) fn is_current(marker: &Marker, addon: &Addon) -> bool {
-    let Source::Url { sha256, .. } = &addon.source;
-    marker.sha256 == *sha256 && addon.path.as_ref().is_none_or(|path| *path == marker.path)
+    marker.source.pin() == addon.source.pin()
+        && addon.path.as_ref().is_none_or(|path| *path == marker.path)
 }
 
 /// Resolves an override entry to the absolute folder to link.
@@ -126,7 +128,7 @@ pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
     Missing,
-    Copy(Sha256),
+    Copy(Pin),
     Link(PathBuf),
 }
 
@@ -181,15 +183,30 @@ pub(crate) fn sync(project: &Project, options: SyncOptions, reporter: Reporter) 
     // here aborts the run; failures while applying are per addon instead, since each
     // swap is atomic on its own.
     let fetcher = Fetcher::new(Cache::from_env()?, reporter);
+    let git = Git::new(fetcher.cache().clone(), reporter);
+    // Addons installed from one repository at one commit share a single export.
+    let mut exports: BTreeMap<(&str, &GitRev), TempPath> = BTreeMap::new();
     let mut archives = BTreeMap::new();
     for (name, step) in &steps {
-        if let Step::Install { addon, .. } = step {
-            let Source::Url { url, sha256 } = &addon.source;
-            let archive = fetcher
-                .fetch_pinned(url, sha256)
-                .with_context(|| format!("cannot fetch `{name}`"))?;
-            archives.insert(name.clone(), archive);
+        let Step::Install { addon, .. } = step else {
+            continue;
+        };
+        let archive = match &addon.source {
+            Source::Url { url, sha256 } => fetcher.fetch_pinned(url, sha256),
+            Source::Git {
+                url,
+                reference,
+                rev,
+            } => match exports.entry((url, rev)) {
+                Entry::Occupied(export) => Ok(export.get().to_path_buf()),
+                Entry::Vacant(slot) => git
+                    .fetch_pinned(url, rev, reference.as_deref())
+                    .and_then(|()| git.export(url, rev))
+                    .map(|export| slot.insert(export).to_path_buf()),
+            },
         }
+        .with_context(|| format!("cannot fetch `{name}`"))?;
+        archives.insert(name.clone(), archive);
     }
 
     let addons_dir = project.addons_dir();
@@ -336,7 +353,7 @@ fn plan(
                             seen: Seen::Missing,
                         },
                         Installed::Copy(marker) => {
-                            let seen = Seen::Copy(marker.sha256);
+                            let seen = Seen::Copy(marker.source.pin());
                             guard_changes(
                                 &marker,
                                 &dir,
@@ -359,7 +376,7 @@ fn plan(
             match installed {
                 Installed::Copy(marker) if is_current(&marker, addon) => Step::UpToDate,
                 Installed::Copy(marker) => {
-                    let step = install(Seen::Copy(marker.sha256));
+                    let step = install(Seen::Copy(marker.source.pin()));
                     guard_changes(&marker, &dir, force, name, reporter, step)
                 }
                 Installed::Missing => install(Seen::Missing),
@@ -392,7 +409,7 @@ fn plan(
         let step = match inspect(&dir, &name, state) {
             Ok(Installed::Copy(marker)) => {
                 let step = Step::Remove {
-                    seen: Seen::Copy(marker.sha256),
+                    seen: Seen::Copy(marker.source.pin()),
                 };
                 guard_changes(&marker, &dir, force, &name, reporter, step)
             }
@@ -436,8 +453,8 @@ fn guard_changes(
 fn recheck(dir: &Path, name: &AddonName, state: &State, seen: &Seen, force: bool) -> Result<()> {
     let unchanged = match (inspect(dir, name, state)?, seen) {
         (Installed::Missing, Seen::Missing) => true,
-        (Installed::Copy(marker), Seen::Copy(sha256)) => {
-            marker.sha256 == *sha256 && (force || marker.changes(dir)?.is_empty())
+        (Installed::Copy(marker), Seen::Copy(pin)) => {
+            marker.source.pin() == *pin && (force || marker.changes(dir)?.is_empty())
         }
         (
             Installed::Link {
@@ -472,8 +489,7 @@ fn install_copy(
     }
     let staged = workspace.stage(name.as_str())?;
     let files = archive.extract(&resolved.path, &staged.path())?;
-    let Source::Url { url, sha256 } = &addon.source;
-    Marker::new(name, url, *sha256, resolved.path, &files).write(&staged.path())?;
+    Marker::new(name, &addon.source, resolved.path, &files).write(&staged.path())?;
     workspace.swap_in(staged, dir)
 }
 
@@ -513,10 +529,10 @@ fn report_check(steps: &BTreeMap<AddonName, Step>, reporter: Reporter) -> Outcom
 }
 
 pub(crate) fn label(name: &AddonName, addon: &Addon) -> String {
-    let Source::Url { sha256, .. } = &addon.source;
+    let pin = addon.source.short_pin();
     match &addon.version {
-        Some(version) => format!("{name} {version} ({})", sha256.short()),
-        None => format!("{name} ({})", sha256.short()),
+        Some(version) => format!("{name} {version} ({pin})"),
+        None => format!("{name} ({pin})"),
     }
 }
 

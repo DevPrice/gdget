@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, Item, Table, TableLike, value};
 
 use crate::digest::Sha256;
+use crate::git::{GitRev, check_git_url, check_ref};
 
 pub const MANIFEST_FILE: &str = "addons.toml";
 pub const OVERRIDES_FILE: &str = "addons.local.toml";
@@ -145,7 +146,53 @@ pub struct Addon {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    Url { url: String, sha256: Sha256 },
+    Url {
+        url: String,
+        sha256: Sha256,
+    },
+    Git {
+        url: String,
+        /// The branch, tag or commit `rev` was resolved from; `None` means the remote's
+        /// default branch. Display and re-pinning only.
+        reference: Option<String>,
+        rev: GitRev,
+    },
+}
+
+impl Source {
+    pub fn url(&self) -> &str {
+        match self {
+            Source::Url { url, .. } | Source::Git { url, .. } => url,
+        }
+    }
+
+    /// What an install of this source is pinned to.
+    pub fn pin(&self) -> Pin {
+        match self {
+            Source::Url { sha256, .. } => Pin::Sha256(*sha256),
+            Source::Git { rev, .. } => Pin::Rev(rev.clone()),
+        }
+    }
+
+    /// The pin as `status` shows it, with the git ref it came from.
+    pub fn short_pin(&self) -> String {
+        match self {
+            Source::Url { sha256, .. } => sha256.short(),
+            Source::Git {
+                reference: Some(reference),
+                rev,
+                ..
+            } => format!("{reference}@{}", rev.short()),
+            Source::Git { rev, .. } => rev.short(),
+        }
+    }
+}
+
+/// Identifies exactly what gets installed: an archive by its hash, or a git commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pin {
+    Sha256(Sha256),
+    Rev(GitRev),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -192,34 +239,70 @@ fn parse_addon(name: &str, table: &dyn TableLike) -> Result<Addon> {
             })
             .transpose()
     };
-    if let Some((key, _)) = table
-        .iter()
-        .find(|(key, _)| !matches!(*key, "version" | "url" | "sha256" | "path"))
-    {
+    if let Some((key, _)) = table.iter().find(|(key, _)| {
+        !matches!(
+            *key,
+            "version" | "url" | "sha256" | "git" | "ref" | "rev" | "path"
+        )
+    }) {
         bail!("unknown key `addons.{name}.{key}` ({NEWER_VERSION_HINT})");
     }
-    let url = get("url")?.ok_or_else(|| anyhow!("`addons.{name}` is missing `url`"))?;
-    check_url(url).with_context(|| format!("invalid `addons.{name}.url`"))?;
+    let only_for = |keys: &[&str], source: &str| -> Result<()> {
+        match keys.iter().find(|key| table.contains_key(key)) {
+            Some(key) => bail!("`addons.{name}.{key}` only applies to `{source}` sources"),
+            None => Ok(()),
+        }
+    };
+    let source = match (get("url")?, get("git")?) {
+        (Some(_), Some(_)) => bail!("`addons.{name}` has both `url` and `git`; keep one"),
+        (None, None) => bail!("`addons.{name}` is missing `url` or `git`"),
+        (Some(url), None) => {
+            only_for(&["ref", "rev"], "git")?;
+            check_url(url).with_context(|| format!("invalid `addons.{name}.url`"))?;
+            let sha256 = get("sha256")?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "`addons.{name}` is missing `sha256` (`gdget add` computes and pins it)"
+                    )
+                })?
+                .parse()
+                .with_context(|| format!("invalid `addons.{name}.sha256`"))?;
+            Source::Url {
+                url: url.to_owned(),
+                sha256,
+            }
+        }
+        (None, Some(url)) => {
+            only_for(&["sha256"], "url")?;
+            check_git_url(url).with_context(|| format!("invalid `addons.{name}.git`"))?;
+            let reference = get("ref")?;
+            if let Some(reference) = reference {
+                check_ref(reference).with_context(|| format!("invalid `addons.{name}.ref`"))?;
+            }
+            let rev = get("rev")?
+                .ok_or_else(|| {
+                    anyhow!("`addons.{name}` is missing `rev` (`gdget add` resolves and pins it)")
+                })?
+                .parse()
+                .with_context(|| format!("invalid `addons.{name}.rev`"))?;
+            Source::Git {
+                url: url.to_owned(),
+                reference: reference.map(str::to_owned),
+                rev,
+            }
+        }
+    };
     let version = get("version")?;
     if let Some(version) = version {
         check_text(version).with_context(|| format!("invalid `addons.{name}.version`"))?;
     }
-    let sha256 = get("sha256")?
-        .ok_or_else(|| {
-            anyhow!("`addons.{name}` is missing `sha256` (`gdget add` computes and pins it)")
-        })?
-        .parse()
-        .with_context(|| format!("invalid `addons.{name}.sha256`"))?;
     let path = get("path")?
         .map(str::parse)
         .transpose()
         .with_context(|| format!("invalid `addons.{name}.path`"))?;
     Ok(Addon {
         version: version.map(str::to_owned),
-        source: Source::Url {
-            url: url.to_owned(),
-            sha256,
-        },
+        source,
         path,
     })
 }
@@ -304,10 +387,28 @@ impl ManifestFile {
             .as_table_like_mut()
             .expect("validated as a table when opened");
 
-        let Source::Url { url, sha256 } = &addon.source;
         set_or_remove(entry, "version", addon.version.clone());
-        entry.insert("url", value(url.as_str()));
-        entry.insert("sha256", value(sha256.to_string()));
+        match &addon.source {
+            Source::Url { url, sha256 } => {
+                for key in ["git", "ref", "rev"] {
+                    entry.remove(key);
+                }
+                entry.insert("url", value(url.as_str()));
+                entry.insert("sha256", value(sha256.to_string()));
+            }
+            Source::Git {
+                url,
+                reference,
+                rev,
+            } => {
+                for key in ["url", "sha256"] {
+                    entry.remove(key);
+                }
+                entry.insert("git", value(url.as_str()));
+                set_or_remove(entry, "ref", reference.clone());
+                entry.insert("rev", value(rev.as_str()));
+            }
+        }
         set_or_remove(entry, "path", addon.path.as_ref().map(ToString::to_string));
     }
 
@@ -431,6 +532,116 @@ mod tests {
         );
     }
 
+    const REV: &str = "afde39c3f0e1afde39c3f0e1afde39c3f0e1afde";
+
+    #[test]
+    fn parses_git_sources() {
+        let parsed = manifest(&format!(
+            r#"
+            [addons.inventory]
+            git = "https://github.com/DevPrice/godot-addons.git"
+            ref = "main"
+            rev = "{REV}"
+            path = "inventory"
+
+            [addons.flat]
+            git = "git@github.com:DevPrice/flat.git"
+            rev = "{REV}"
+            "#
+        ))
+        .unwrap();
+        let inventory = &parsed.addons[&name("inventory")];
+        assert_eq!(
+            inventory.source,
+            Source::Git {
+                url: "https://github.com/DevPrice/godot-addons.git".into(),
+                reference: Some("main".into()),
+                rev: REV.parse().unwrap(),
+            }
+        );
+        assert_eq!(inventory.source.short_pin(), "main@afde39c3f0e1");
+        assert_eq!(
+            parsed.addons[&name("flat")].source.short_pin(),
+            "afde39c3f0e1"
+        );
+    }
+
+    #[test]
+    fn git_and_url_fields_do_not_mix() {
+        let git = "[addons.a]\ngit = \"https://x/a.git\"\n";
+        let err = error(manifest(&format!("{git}ref = \"main\"")));
+        assert!(err.contains("missing `rev`"), "{err}");
+
+        let err = error(manifest(&format!("{git}rev = \"abc\"")));
+        assert!(err.contains("invalid `addons.a.rev`"), "{err}");
+
+        let err = error(manifest(&format!(
+            "{git}rev = \"{REV}\"\nsha256 = \"HASH\""
+        )));
+        assert!(
+            err.contains("`addons.a.sha256` only applies to `url`"),
+            "{err}"
+        );
+
+        let err = error(manifest(&format!(
+            "[addons.a]\nurl = \"https://x/a.zip\"\nsha256 = \"HASH\"\nrev = \"{REV}\""
+        )));
+        assert!(
+            err.contains("`addons.a.rev` only applies to `git`"),
+            "{err}"
+        );
+
+        let err = error(manifest(&format!(
+            "{git}url = \"https://x/a.zip\"\nrev = \"{REV}\""
+        )));
+        assert!(err.contains("both `url` and `git`"), "{err}");
+
+        let err = error(manifest(&format!(
+            "[addons.a]\ngit = \"file:///a.git\"\nrev = \"{REV}\""
+        )));
+        assert!(err.contains("invalid `addons.a.git`"), "{err}");
+
+        let err = error(manifest(&format!("{git}rev = \"{REV}\"\nref = \"--x\"")));
+        assert!(err.contains("invalid `addons.a.ref`"), "{err}");
+    }
+
+    #[test]
+    fn switching_source_kinds_drops_the_old_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        let url = Addon {
+            version: None,
+            source: Source::Url {
+                url: "https://x/a.zip".into(),
+                sha256: HASH.parse().unwrap(),
+            },
+            path: None,
+        };
+        let git = Addon {
+            version: None,
+            source: Source::Git {
+                url: "https://x/a.git".into(),
+                reference: Some("v1".into()),
+                rev: REV.parse().unwrap(),
+            },
+            path: Some(ArchivePath::root()),
+        };
+        let mut file = ManifestFile::open(&path).unwrap();
+        file.set(&name("a"), &url);
+        file.set(&name("a"), &git);
+        file.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sha256"), "{text}");
+        assert_eq!(Manifest::parse(&text).unwrap().addons[&name("a")], git);
+
+        let mut file = ManifestFile::open(&path).unwrap();
+        file.set(&name("a"), &url);
+        file.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("rev") && !text.contains("ref"), "{text}");
+        assert_eq!(Manifest::parse(&text).unwrap().addons[&name("a")], url);
+    }
+
     #[test]
     fn empty_manifest_has_no_addons() {
         assert!(manifest("").unwrap().addons.is_empty());
@@ -451,7 +662,10 @@ mod tests {
     #[test]
     fn missing_or_malformed_fields_name_the_key() {
         let err = error(manifest("[addons.a]\nsha256 = \"HASH\""));
-        assert!(err.contains("`addons.a` is missing `url`"), "{err}");
+        assert!(
+            err.contains("`addons.a` is missing `url` or `git`"),
+            "{err}"
+        );
 
         let err = error(manifest("[addons.a]\nurl = \"https://x/a.zip\""));
         assert!(err.contains("missing `sha256`"), "{err}");

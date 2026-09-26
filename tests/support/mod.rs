@@ -19,11 +19,13 @@ pub(crate) fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
-/// A Godot project, a private archive cache and a fixture server for one test.
+/// A Godot project, a private archive cache, a fixture server and git remotes for one
+/// test.
 pub(crate) struct Fixture {
     pub project: tempfile::TempDir,
     pub cache: tempfile::TempDir,
     pub server: TestServer,
+    pub remotes: GitRemotes,
 }
 
 impl Fixture {
@@ -34,6 +36,7 @@ impl Fixture {
             project,
             cache: tempfile::tempdir().unwrap(),
             server: TestServer::start(),
+            remotes: GitRemotes::new(),
         }
     }
 
@@ -74,8 +77,93 @@ impl Fixture {
             .env("GDGET_STORE_URL", self.server.url(""))
             .env("NO_COLOR", "1")
             .env_remove("GITHUB_ACTIONS")
-            .env_remove("GITHUB_TOKEN");
+            .env_remove("GITHUB_TOKEN")
+            .envs(self.remotes.env());
         cmd
+    }
+}
+
+/// Local repositories that git reaches at `https://example.test/<name>.git` through an
+/// `insteadOf` rewrite to `file://`, so tests never touch the network.
+pub(crate) struct GitRemotes {
+    dir: tempfile::TempDir,
+}
+
+impl GitRemotes {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("empty.gitconfig"), "").unwrap();
+        Self { dir }
+    }
+
+    pub(crate) fn url(&self, repo: &str) -> String {
+        format!("https://example.test/{repo}.git")
+    }
+
+    pub(crate) fn path(&self, repo: &str) -> PathBuf {
+        self.dir.path().join(format!("{repo}.git"))
+    }
+
+    /// Writes `files` into `repo`, creating it on first use, commits everything and
+    /// returns the new commit's hash.
+    pub(crate) fn commit(&self, repo: &str, files: &[(&str, &str)]) -> String {
+        let path = self.path(repo);
+        if !path.exists() {
+            std::fs::create_dir_all(&path).unwrap();
+            self.git(repo, &["init", "--quiet", "-b", "main"]);
+        }
+        for (file, contents) in files {
+            let file = path.join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, contents).unwrap();
+        }
+        self.git(repo, &["add", "--all"]);
+        self.git(
+            repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "commit"],
+        );
+        self.git(repo, &["rev-parse", "HEAD"]).trim().to_owned()
+    }
+
+    pub(crate) fn git(&self, repo: &str, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(self.path(repo))
+            .args([
+                "-c",
+                "user.name=gdget",
+                "-c",
+                "user.email=gdget@example.com",
+            ])
+            .args(args)
+            .envs(self.env())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// Environment that isolates git from the user's configuration and routes
+    /// `https://example.test/` here.
+    fn env(&self) -> Vec<(String, String)> {
+        let dir = self.dir.path().to_str().unwrap().replace('\\', "/");
+        let file_url = if dir.starts_with('/') {
+            format!("file://{dir}/")
+        } else {
+            format!("file:///{dir}/")
+        };
+        let global = self.dir.path().join("empty.gitconfig");
+        [
+            ("GIT_ALLOW_PROTOCOL", "file"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_CONFIG_GLOBAL", global.to_str().unwrap()),
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", &format!("url.{file_url}.insteadOf")),
+            ("GIT_CONFIG_VALUE_0", "https://example.test/"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
     }
 }
 

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 
 use crate::Outcome;
-use crate::manifest::{AddonName, Manifest, Overrides, Source};
+use crate::manifest::{AddonName, Manifest, Overrides};
 use crate::project::Project;
 use crate::state::State;
 use crate::sync::{Installed, inspect, is_current, resolve_override, same_dir, summarize};
@@ -34,10 +34,10 @@ pub(crate) fn status(project: &Project) -> Result<Outcome> {
         let dir = addons_dir.join(name.as_str());
         let pin = match manifest.addons.get(*name) {
             Some(addon) => {
-                let Source::Url { sha256, .. } = &addon.source;
+                let pin = addon.source.short_pin();
                 match &addon.version {
-                    Some(version) => format!("{version} ({})", sha256.short()),
-                    None => format!("({})", sha256.short()),
+                    Some(version) => format!("{version} ({pin})"),
+                    None => format!("({pin})"),
                 }
             }
             None => "(override only)".to_owned(),
@@ -80,7 +80,7 @@ pub(crate) fn status(project: &Project) -> Result<Outcome> {
                         } else {
                             format!(
                                 "outdated, {} installed (run gdget sync){changes}",
-                                marker.sha256.short()
+                                marker.source.short_pin()
                             )
                         }
                     }
