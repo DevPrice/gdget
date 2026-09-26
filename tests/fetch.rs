@@ -95,6 +95,20 @@ fn http_errors_name_the_url() {
 }
 
 #[test]
+fn oversized_downloads_are_refused_and_not_cached() {
+    let server = TestServer::start();
+    let url = server.serve("/big.zip", vec![0u8; 4096]);
+    let cache = tempfile::tempdir().unwrap();
+
+    let err = fetcher(cache.path())
+        .with_max_bytes(1024)
+        .fetch_unpinned(&url)
+        .unwrap_err();
+    assert!(err.to_string().contains("larger than"), "{err}");
+    assert_eq!(cached_archives(cache.path()), 0);
+}
+
+#[test]
 fn token_is_not_sent_to_other_hosts() {
     let server = TestServer::start();
     let url = server.serve("/a.zip", b"x".to_vec());

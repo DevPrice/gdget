@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -16,19 +17,49 @@ pub struct ExtractedFile {
     pub sha256: Sha256,
 }
 
+/// Caps on what one archive may expand to, so a zip bomb fails instead of filling the
+/// disk. Sizes are counted as bytes are written, not taken from the zip's headers.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_entries: usize,
+    pub max_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_entries: 100_000,
+            max_bytes: 8 << 30,
+        }
+    }
+}
+
 pub struct Archive {
     path: PathBuf,
     zip: ZipArchive<File>,
     /// Validated path segments of each entry, indexed like the zip's entries.
     entries: Vec<Vec<String>>,
     tree: EntryTree,
+    limits: Limits,
 }
 
 impl Archive {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_limits(path, Limits::default())
+    }
+
+    pub fn open_with_limits(path: &Path, limits: Limits) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         let mut zip = ZipArchive::new(file)
             .with_context(|| format!("{} is not a valid zip archive", path.display()))?;
+        if zip.len() > limits.max_entries {
+            bail!(
+                "{} has {} entries, more than the limit of {}",
+                path.display(),
+                zip.len(),
+                limits.max_entries
+            );
+        }
         let mut entries = Vec::with_capacity(zip.len());
         let mut tree = EntryTree::default();
         for index in 0..zip.len() {
@@ -47,6 +78,7 @@ impl Archive {
             zip,
             entries,
             tree,
+            limits,
         })
     }
 
@@ -58,6 +90,7 @@ impl Archive {
     pub fn extract(&mut self, prefix: &ArchivePath, dest: &Path) -> Result<Vec<ExtractedFile>> {
         std::fs::create_dir(dest).with_context(|| format!("cannot create {}", dest.display()))?;
         let mut extracted = Vec::new();
+        let mut remaining = self.limits.max_bytes;
         for index in 0..self.entries.len() {
             let Some(relative) = self.entries[index].strip_prefix(prefix.segments()) else {
                 continue;
@@ -96,9 +129,18 @@ impl Archive {
             }
             let mut file = File::create_new(&out)
                 .with_context(|| format!("cannot create {}", out.display()))?;
-            let (_, sha256) = copy_hashed(&mut entry, &mut file).with_context(|| {
-                format!("cannot extract {relative} from {}", self.path.display())
-            })?;
+            let (size, sha256) = copy_hashed(&mut (&mut entry).take(remaining + 1), &mut file)
+                .with_context(|| {
+                    format!("cannot extract {relative} from {}", self.path.display())
+                })?;
+            if size > remaining {
+                bail!(
+                    "{} expands to more than the {} MiB limit",
+                    self.path.display(),
+                    self.limits.max_bytes >> 20
+                );
+            }
+            remaining -= size;
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
                 use std::os::unix::fs::PermissionsExt;
@@ -296,6 +338,34 @@ mod tests {
             .unwrap()
             .extract(&"a".parse().unwrap(), &temp.path().join("out"))
             .unwrap();
+    }
+
+    #[test]
+    fn enforces_entry_and_size_limits() {
+        let temp = tempfile::tempdir().unwrap();
+        let zip = write_zip(
+            temp.path(),
+            &[
+                Item::File("a/one.bin", &[0; 600]),
+                Item::File("a/two.bin", &[0; 600]),
+            ],
+        );
+        let few_entries = Limits {
+            max_entries: 1,
+            ..Limits::default()
+        };
+        let err = Archive::open_with_limits(&zip, few_entries).err().unwrap();
+        assert!(err.to_string().contains("more than the limit"), "{err}");
+
+        let small = Limits {
+            max_bytes: 1000,
+            ..Limits::default()
+        };
+        let err = Archive::open_with_limits(&zip, small)
+            .unwrap()
+            .extract(&"a".parse().unwrap(), &temp.path().join("out"))
+            .unwrap_err();
+        assert!(err.to_string().contains("MiB limit"), "{err}");
     }
 
     #[test]

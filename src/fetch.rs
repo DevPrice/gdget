@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,11 +59,16 @@ fn cache_dir_from(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     }
 }
 
+/// The largest archive gdget downloads. The hash is only checked once a download ends, so
+/// without a cap a hostile server could fill the disk before being caught.
+pub const MAX_DOWNLOAD_BYTES: u64 = 2 << 30;
+
 /// Downloads archives into the cache, verifying every archive it hands out.
 pub struct Fetcher {
     agent: ureq::Agent,
     cache: Cache,
     github_token: Option<String>,
+    max_bytes: u64,
     reporter: Reporter,
 }
 
@@ -73,6 +79,7 @@ impl Fetcher {
             .user_agent(concat!("gdget/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
             // Release downloads redirect from github.com to a storage CDN; the token must
             // not follow.
             .redirect_auth_headers(RedirectAuthHeaders::Never)
@@ -81,12 +88,18 @@ impl Fetcher {
             agent: config.into(),
             cache,
             github_token: std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()),
+            max_bytes: MAX_DOWNLOAD_BYTES,
             reporter,
         }
     }
 
     pub fn with_github_token(mut self, token: Option<String>) -> Self {
         self.github_token = token;
+        self
+    }
+
+    pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
         self
     }
 
@@ -146,8 +159,15 @@ impl Fetcher {
             .with_context(|| format!("cannot create {}", temp_dir.display()))?;
         let mut temp = NamedTempFile::new_in(&temp_dir)
             .with_context(|| format!("cannot create a file in {}", temp_dir.display()))?;
-        let (_, sha256) = copy_hashed(&mut response.into_body().into_reader(), temp.as_file_mut())
+        let mut body = response.into_body().into_reader().take(self.max_bytes + 1);
+        let (size, sha256) = copy_hashed(&mut body, temp.as_file_mut())
             .with_context(|| format!("cannot download {url}"))?;
+        if size > self.max_bytes {
+            bail!(
+                "cannot download {url}: it is larger than the {} MiB limit",
+                self.max_bytes >> 20
+            );
+        }
         Ok((sha256, temp))
     }
 
