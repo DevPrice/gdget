@@ -258,7 +258,8 @@ fn wrapper_folder(tree: &dyn Tree) -> Option<ArchivePath> {
     }
 }
 
-fn is_addon_folder(tree: &dyn Tree, dir: &ArchivePath) -> bool {
+/// Whether `dir` holds `plugin.cfg` or a `.gdextension` file.
+pub(crate) fn is_addon_folder(tree: &dyn Tree, dir: &ArchivePath) -> bool {
     tree.children(dir.segments())
         .iter()
         .any(|e| !e.is_dir && (e.name == "plugin.cfg" || e.name.ends_with(".gdextension")))

@@ -71,6 +71,8 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
             reporter,
         ),
         Command::Remove { name } => edit::remove(&project, &name, reporter),
+        Command::Link { name, path } => edit::link(&project, name.as_ref(), &path, reporter),
+        Command::Unlink { name } => edit::unlink(&project, &name, reporter),
         Command::Status => status::status(&project),
     }
 }

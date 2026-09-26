@@ -325,6 +325,54 @@ impl ManifestFile {
     }
 }
 
+/// `addons.local.toml` opened for editing; comments and formatting outside the edited
+/// entry are preserved.
+pub struct OverridesFile {
+    path: PathBuf,
+    doc: DocumentMut,
+}
+
+impl OverridesFile {
+    /// Opens the overrides file for editing; a missing file starts an empty one.
+    pub fn open(path: &Path) -> Result<Self> {
+        let doc = match std::fs::read_to_string(path) {
+            Ok(text) => {
+                Overrides::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
+                text.parse()?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            doc,
+        })
+    }
+
+    /// Points `name` at `dir`, a path relative to the project root.
+    pub fn set(&mut self, name: &AddonName, dir: &str) {
+        self.doc
+            .entry("overrides")
+            .or_insert_with(|| Item::Table(Table::new()))
+            .as_table_like_mut()
+            .expect("validated as a table when opened")
+            .insert(name.as_str(), value(dir));
+    }
+
+    /// Removes an override, returning whether it was present.
+    pub fn remove(&mut self, name: &AddonName) -> bool {
+        self.doc
+            .get_mut("overrides")
+            .and_then(Item::as_table_like_mut)
+            .is_some_and(|overrides| overrides.remove(name.as_str()).is_some())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        crate::fsutil::write_atomic(&self.path, self.doc.to_string().as_bytes())
+            .with_context(|| format!("cannot write {}", self.path.display()))
+    }
+}
+
 fn set_or_remove(table: &mut dyn TableLike, key: &str, new: Option<String>) {
     match new {
         Some(new) => {
@@ -589,6 +637,37 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[addons.\"gut.v9\"]"), "{text}");
         assert!(Manifest::parse(&text).unwrap().addons.contains_key(&name));
+    }
+
+    #[test]
+    fn editing_overrides_preserves_comments_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(OVERRIDES_FILE);
+        let mut file = OverridesFile::open(&path).unwrap();
+        file.set(&name("gut.v9"), "../gut");
+        file.save().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[overrides]\n\"gut.v9\" = \"../gut\"\n"
+        );
+
+        std::fs::write(
+            &path,
+            "# my builds\n[overrides]\nkeep = \"../keep\" # stays\ngone = \"../gone\"\n",
+        )
+        .unwrap();
+        let mut file = OverridesFile::open(&path).unwrap();
+        file.set(&name("keep"), "../moved");
+        assert!(file.remove(&name("gone")));
+        assert!(!file.remove(&name("never-there")));
+        file.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# my builds\n"), "{text}");
+        assert!(!text.contains("gone"), "{text}");
+        let overrides = Overrides::parse(&text).unwrap();
+        assert_eq!(overrides.addons[&name("keep")], PathBuf::from("../moved"));
+        assert_eq!(overrides.addons.len(), 1);
     }
 
     #[test]

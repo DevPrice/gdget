@@ -58,6 +58,24 @@ pub enum Command {
         name: AddonName,
     },
 
+    /// Use a local folder in place of an addon's pinned release.
+    #[command(allow_missing_positional = true)]
+    Link {
+        /// Install folder name: addons/<NAME>/ links to PATH. Defaults to the folder's
+        /// addons/ folder name, or its own name if it is an addon folder.
+        name: Option<AddonName>,
+
+        /// The local build: the addon folder itself, or a folder laid out like the
+        /// release zip.
+        path: PathBuf,
+    },
+
+    /// Stop using a local folder and go back to the pinned release.
+    Unlink {
+        /// Install folder name of the addon.
+        name: AddonName,
+    },
+
     /// Show each addon's pinned version, installed state, and overrides.
     Status,
 }

@@ -1,18 +1,22 @@
+use std::path::{Component, Path, PathBuf};
+
 use anyhow::{Context, Result, bail};
 
 use crate::Outcome;
 use crate::archive::Archive;
 use crate::cli::AddonSource;
 use crate::fetch::{Cache, Fetcher};
-use crate::layout::{self, Tree};
+use crate::fsutil::relative_path;
+use crate::layout::{self, DirTree, Tree};
 use crate::manifest::{
-    Addon, AddonName, ArchivePath, MANIFEST_FILE, ManifestFile, OVERRIDES_FILE, Overrides, Source,
+    Addon, AddonName, ArchivePath, MANIFEST_FILE, ManifestFile, OVERRIDES_FILE, Overrides,
+    OverridesFile, Source, check_text,
 };
 use crate::project::Project;
 use crate::report::Reporter;
 use crate::state::State;
 use crate::store::Store;
-use crate::sync::{self, Installed, SyncOptions, inspect, label};
+use crate::sync::{self, Installed, SyncOptions, inspect, label, resolve_override};
 
 /// Pins `source` as addon `name` (re-pinning it if already present) and installs it.
 /// Without a name, the archive's `addons/` folder name is used.
@@ -83,18 +87,11 @@ pub(crate) fn add(
         .contains_key(name)
     {
         reporter.warn(format!(
-            "{OVERRIDES_FILE} overrides {name}; the pinned version is installed once the \
-             override is removed"
+            "{OVERRIDES_FILE} overrides {name}; the pinned version is installed once you \
+             run `gdget unlink {name}`"
         ));
     }
-    sync::sync(
-        project,
-        SyncOptions {
-            only: Some(name.clone()),
-            ..SyncOptions::default()
-        },
-        reporter,
-    )
+    sync_only(project, name, reporter)
 }
 
 fn ensure_managed(project: &Project, name: &AddonName, state: &State) -> Result<()> {
@@ -102,7 +99,7 @@ fn ensure_managed(project: &Project, name: &AddonName, state: &State) -> Result<
     if let Installed::Unowned | Installed::Link { owned: false, .. } = inspect(&dir, name, state)? {
         bail!(
             "addons/{name} exists but was not installed by gdget. Move or delete it, then \
-             run gdget add again"
+             try again"
         );
     }
     Ok(())
@@ -126,6 +123,115 @@ fn detect_name(tree: &dyn Tree, source: &AddonSource) -> Result<AddonName> {
     }
 }
 
+/// Overrides addon `name` with the local folder `path` and links it. Without a name, the
+/// folder's `addons/` folder name, or its own name if it is an addon folder, is used.
+pub(crate) fn link(
+    project: &Project,
+    name: Option<&AddonName>,
+    path: &Path,
+    reporter: Reporter,
+) -> Result<Outcome> {
+    let mut overrides = OverridesFile::open(&project.overrides_path())?;
+    let target =
+        std::path::absolute(path).with_context(|| format!("cannot resolve {}", path.display()))?;
+    if !target.is_dir() {
+        bail!("{} is not a directory", path.display());
+    }
+    let name = match name {
+        Some(name) => name.clone(),
+        None => detect_local_name(&target)?,
+    };
+    let dir = override_entry(project.root(), &target)?;
+
+    ensure_managed(project, &name, &State::load(&project.state_dir())?)?;
+    resolve_override(project, &name, Path::new(&dir))?;
+    overrides.set(&name, &dir);
+    overrides.save()?;
+    reporter.action("Overrode", format!("{name} with {dir} in {OVERRIDES_FILE}"));
+    sync_only(project, &name, reporter)
+}
+
+/// Removes the override for `name`, restoring the pinned release if there is one.
+pub(crate) fn unlink(project: &Project, name: &AddonName, reporter: Reporter) -> Result<Outcome> {
+    let mut overrides = OverridesFile::open(&project.overrides_path())?;
+    if !overrides.remove(name) {
+        bail!("`{name}` has no override in {OVERRIDES_FILE}");
+    }
+    overrides.save()?;
+    reporter.action(
+        "Dropped",
+        format!("the override for {name} from {OVERRIDES_FILE}"),
+    );
+    sync_only(project, name, reporter)
+}
+
+fn detect_local_name(dir: &Path) -> Result<AddonName> {
+    let tree = DirTree::new(dir);
+    let folder = match layout::single_addon_name(&tree) {
+        Some(folder) => Some(folder),
+        None if layout::is_addon_folder(&tree, &ArchivePath::root()) => tree.root_name(),
+        None => None,
+    };
+    let Some(folder) = folder else {
+        bail!(
+            "cannot tell which addon {} holds; pass the install folder name: gdget link \
+             NAME PATH",
+            dir.display()
+        );
+    };
+    folder.parse().with_context(|| {
+        format!("cannot install {folder} as is; pass the install folder name: gdget link NAME PATH")
+    })
+}
+
+/// Relative overrides may climb at most this many folders above the project root.
+const MAX_RELATIVE_UPS: usize = 2;
+
+/// How the override for `target` is written: relative to the project root with `/`
+/// separators when the two are near each other, as sibling checkouts are, so it survives
+/// moving both; otherwise absolute, since a long `../../..` chain breaks on any move.
+fn override_entry(root: &Path, target: &Path) -> Result<String> {
+    let root =
+        std::path::absolute(root).with_context(|| format!("cannot resolve {}", root.display()))?;
+    let path: PathBuf = relative_path(target, &root)
+        .filter(|path| {
+            path.components()
+                .filter(|c| *c == Component::ParentDir)
+                .count()
+                <= MAX_RELATIVE_UPS
+        })
+        .unwrap_or_else(|| target.to_owned());
+    let entry = if path.is_absolute() {
+        path.to_str().map(str::to_owned)
+    } else if path.as_os_str().is_empty() {
+        Some(".".to_owned())
+    } else {
+        path.components()
+            .map(|c| c.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+            .map(|segments| segments.join("/"))
+    };
+    let Some(entry) = entry else {
+        bail!(
+            "the path {} is not valid UTF-8, which {OVERRIDES_FILE} cannot hold",
+            target.display()
+        );
+    };
+    check_text(&entry)?;
+    Ok(entry)
+}
+
+fn sync_only(project: &Project, name: &AddonName, reporter: Reporter) -> Result<Outcome> {
+    sync::sync(
+        project,
+        SyncOptions {
+            only: Some(name.clone()),
+            ..SyncOptions::default()
+        },
+        reporter,
+    )
+}
+
 /// Removes addon `name` from the manifest and uninstalls it.
 pub(crate) fn remove(project: &Project, name: &AddonName, reporter: Reporter) -> Result<Outcome> {
     if !project.has_manifest() {
@@ -145,12 +251,5 @@ pub(crate) fn remove(project: &Project, name: &AddonName, reporter: Reporter) ->
             "{OVERRIDES_FILE} still overrides {name}, so it stays linked"
         ));
     }
-    sync::sync(
-        project,
-        SyncOptions {
-            only: Some(name.clone()),
-            ..SyncOptions::default()
-        },
-        reporter,
-    )
+    sync_only(project, name, reporter)
 }

@@ -10,7 +10,9 @@ use crate::fetch::{Cache, Fetcher};
 use crate::install::{Workspace, ensure_real_dir};
 use crate::layout::{self, DirTree};
 use crate::link;
-use crate::manifest::{Addon, AddonName, Manifest, OVERRIDES_FILE, Overrides, Source};
+use crate::manifest::{
+    Addon, AddonName, MANIFEST_FILE, Manifest, OVERRIDES_FILE, Overrides, Source,
+};
 use crate::marker::{Change, Marker};
 use crate::project::Project;
 use crate::report::Reporter;
@@ -149,21 +151,26 @@ enum Step {
 }
 
 pub(crate) fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Result<Outcome> {
-    if !project.has_manifest() {
+    let mut state = State::load(&project.state_dir())?;
+    let manifest = if project.has_manifest() {
+        Manifest::load(&project.manifest_path())?
+    } else if project.overrides_path().is_file() || !state.links.is_empty() {
+        // A project can use local builds before it pins anything; the recorded links
+        // case lets sync clean up after the overrides file is deleted.
+        Manifest::default()
+    } else {
         bail!(
-            "no addons.toml in {}; create one with `gdget add <name> <url>`",
+            "no {MANIFEST_FILE} in {}; create one with `gdget add SOURCE`",
             project.root().display()
         );
-    }
+    };
     if !project.has_godot_project() {
         reporter.warn(format!(
-            "{} has addons.toml but no project.godot",
+            "{} has {MANIFEST_FILE} but no project.godot",
             project.root().display()
         ));
     }
-    let manifest = Manifest::load(&project.manifest_path())?;
     let overrides = Overrides::load(&project.overrides_path())?;
-    let mut state = State::load(&project.state_dir())?;
 
     let steps = plan(project, &manifest, &overrides, &state, &options, reporter)?;
     if options.check {
