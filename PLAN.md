@@ -99,10 +99,12 @@ directory, and tries these rules in order:
   2. Rename the staged folder into place.
   3. Delete the trash.
 
-  If step 1 fails on Windows with a sharing violation or access-denied error, the editor has
-  the DLL loaded. The old folder is untouched, the staging folder is cleaned up, and the
-  message tells the user to close the Godot editor. If step 2 fails, the old folder is
-  renamed back.
+  Windows allows renaming a folder while a DLL inside it is loaded (tested), so a failed
+  rename can't be the lock check. Before step 1, gdget tries to open every file in the old
+  folder for writing, which a loaded image refuses with a sharing violation. It then
+  leaves the old folder untouched, cleans up the staging folder, and tells the user to
+  close the Godot editor. A sharing error on the step 1 rename gets the same message. If
+  step 2 fails, the old folder is renamed back.
 - **Marker:** `addons/<name>/.gdget.toml` holds the URL, sha256, resolved `path`, and a
   per-file hash list of what was extracted.
   - A no-op `sync` only compares the marker with the manifest. That is fast and does no

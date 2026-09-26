@@ -3,6 +3,7 @@ pub mod cli;
 pub mod digest;
 pub mod fetch;
 pub mod fsutil;
+pub mod install;
 pub mod layout;
 pub mod manifest;
 pub mod marker;
