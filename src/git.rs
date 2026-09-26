@@ -296,6 +296,11 @@ impl Git {
         for var in REPO_ENV {
             command.env_remove(var);
         }
+        if cfg!(windows) {
+            // Git for Windows otherwise fails past 260 characters, which a deep cache
+            // folder reaches inside objects/pack/.
+            command.args(["-c", "core.longpaths=true"]);
+        }
         if let Some(repo) = repo {
             command.arg("--git-dir").arg(repo);
         }

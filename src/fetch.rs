@@ -31,11 +31,13 @@ impl Cache {
         self.dir.join("sha256").join(format!("{sha256}.zip"))
     }
 
-    /// The bare repository that caches commits fetched from `url`.
+    /// The bare repository that caches commits fetched from `url`. The name is a short
+    /// hash because git's pack files already use long names inside it, and Windows paths
+    /// are limited to 260 characters. A collision would only share an object store, and
+    /// commits are always looked up by their full hash.
     pub fn git_repo_path(&self, url: &str) -> PathBuf {
-        self.dir
-            .join("git")
-            .join(format!("{}.git", Sha256::of_bytes(url.as_bytes())))
+        let hash = Sha256::of_bytes(url.as_bytes()).to_string();
+        self.dir.join("git").join(&hash[..16])
     }
 
     pub(crate) fn temp_dir(&self) -> PathBuf {
