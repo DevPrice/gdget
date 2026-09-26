@@ -11,6 +11,7 @@ pub mod marker;
 pub mod project;
 pub mod report;
 pub mod state;
+pub mod status;
 pub mod sync;
 
 use anyhow::Context;
@@ -43,6 +44,6 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
         }
         Command::Add { .. } => anyhow::bail!("add is not implemented yet"),
         Command::Remove { .. } => anyhow::bail!("remove is not implemented yet"),
-        Command::Status => anyhow::bail!("status is not implemented yet"),
+        Command::Status => status::status(&project),
     }
 }
