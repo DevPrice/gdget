@@ -19,7 +19,7 @@ exactly those versions.
 
 Download the archive for your platform from the
 [releases page](https://github.com/DevPrice/gdget/releases) and put `gdget` on your
-`PATH`, or build it with Rust 1.88+:
+`PATH`, or build it with Rust 1.89+:
 
 ```sh
 cargo install --git https://github.com/DevPrice/gdget --locked
