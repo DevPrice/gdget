@@ -52,7 +52,8 @@ impl FromStr for Sha256 {
             bail!("`{s}` is not a sha256 hash (expected 64 hex digits)");
         }
         let mut bytes = [0u8; 32];
-        for (byte, pair) in bytes.iter_mut().zip(s.as_bytes().chunks_exact(2)) {
+        let (pairs, _) = s.as_bytes().as_chunks::<2>();
+        for (byte, pair) in bytes.iter_mut().zip(pairs) {
             let pair = std::str::from_utf8(pair).expect("ASCII checked above");
             *byte = u8::from_str_radix(pair, 16).expect("hex checked above");
         }
