@@ -5,8 +5,11 @@ edition = "2024"
 rust-version = "1.89"
 description = "Install pinned Godot addon dependencies from a committed manifest"
 license = "MIT"
-publish = false
 repository = "https://github.com/DevPrice/gdget"
+readme = "README.md"
+keywords = ["godot", "gdextension", "addons", "gamedev", "package-manager"]
+categories = ["command-line-utilities", "game-development", "development-tools"]
+include = ["/src", "/docs", "/README.md", "/LICENSE", "/Cargo.lock"]
 
 [dependencies]
 anstream = "1.0.0"

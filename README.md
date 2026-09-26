@@ -13,10 +13,11 @@ Download the archive for your platform from the
 [releases page](https://github.com/DevPrice/gdget/releases), extract `gdget`, and add
 it to your `PATH`.
 
-Alternatively, if you have Rust 1.89 or later, install from source:
+Alternatively, if you have Rust 1.89 or later, install from
+[crates.io](https://crates.io/crates/gdget):
 
 ```sh
-cargo install --git https://github.com/DevPrice/gdget --locked
+cargo install gdget --locked
 ```
 
 ## Quick start
