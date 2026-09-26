@@ -18,18 +18,18 @@ exactly those versions.
 ## Install
 
 Download the archive for your platform from the
-[releases page](https://github.com/OWNER/gdget/releases) and put `gdget` on your
+[releases page](https://github.com/DevPrice/gdget/releases) and put `gdget` on your
 `PATH`, or build it with Rust 1.88+:
 
 ```sh
-cargo install --git https://github.com/OWNER/gdget --locked
+cargo install --git https://github.com/DevPrice/gdget --locked
 ```
 
 ## Quick start
 
 ```sh
 cd my-game                 # the folder with project.godot
-gdget add godot-slang https://github.com/OWNER/godot-slang/releases/download/v0.4.1/godot-slang.zip --version-label 0.4.1
+gdget add godot-slang https://github.com/DevPrice/godot-slang/releases/download/v0.4.1/godot-slang.zip --version-label 0.4.1
 git add addons.toml
 ```
 
@@ -65,12 +65,12 @@ exact pins.
 ```toml
 [addons.godot-slang]
 version = "0.4.1"                 # optional; shown by `status`, never used to resolve
-url = "https://github.com/OWNER/godot-slang/releases/download/v0.4.1/godot-slang.zip"
+url = "https://github.com/DevPrice/godot-slang/releases/download/v0.4.1/godot-slang.zip"
 sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 path = "addons/godot-slang"       # folder inside the archive to install
 
 [addons.godot-verse]
-url = "https://github.com/OWNER/godot-verse/releases/download/v1.2.0/godot-verse.zip"
+url = "https://github.com/DevPrice/godot-verse/releases/download/v1.2.0/godot-verse.zip"
 sha256 = "…"
 path = "."
 ```
@@ -184,7 +184,7 @@ Run `gdget sync` before exporting the game:
 - name: Install gdget
   shell: bash
   run: |
-    curl -fsSL https://github.com/OWNER/gdget/releases/download/v0.1.0/gdget-x86_64-unknown-linux-musl.tar.gz \
+    curl -fsSL https://github.com/DevPrice/gdget/releases/download/v0.1.0/gdget-x86_64-unknown-linux-musl.tar.gz \
       | tar -xz -C "$RUNNER_TEMP"
     echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
@@ -235,3 +235,7 @@ run `gdget sync --check`.
 - Don't put symbolic links in the zip. gdget refuses them, because they need Developer
   Mode on Windows and can point outside the addon. This includes the `Versions/Current`
   links inside macOS frameworks, so ship a flat `.framework` or a `.dylib`.
+
+## License
+
+[MIT](LICENSE)
