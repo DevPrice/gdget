@@ -7,6 +7,7 @@ use crate::archive::Archive;
 use crate::cli::AddonSource;
 use crate::fetch::{Cache, Fetcher};
 use crate::fsutil::relative_path;
+use crate::git::Git;
 use crate::layout::{self, DirTree, Tree};
 use crate::manifest::{
     Addon, AddonName, ArchivePath, MANIFEST_FILE, ManifestFile, OVERRIDES_FILE, Overrides,
@@ -35,7 +36,7 @@ pub(crate) fn add(
     }
 
     let fetcher = Fetcher::new(Cache::from_env()?, reporter);
-    let (url, store_version) = match source {
+    let (pinned, archive_path, store_version, _export) = match source {
         AddonSource::Url(url) => {
             if url.starts_with("http://") {
                 reporter.warn(format!(
@@ -43,7 +44,9 @@ pub(crate) fn add(
                      match this one, which could have been altered in transit"
                 ));
             }
-            (url.clone(), None)
+            let (sha256, archive) = fetcher.fetch_unpinned(url)?;
+            let url = url.clone();
+            (Source::Url { url, sha256 }, archive, None, None)
         }
         AddonSource::Store(asset) => {
             let release = Store::from_env()?.resolve(&fetcher, asset)?;
@@ -51,28 +54,46 @@ pub(crate) fn add(
                 "Found",
                 format!("{}/{} {}", asset.publisher, asset.asset, release.version),
             );
-            (release.url, Some(release.version))
+            let (sha256, archive) = fetcher.fetch_unpinned(&release.url)?;
+            let url = release.url;
+            (
+                Source::Url { url, sha256 },
+                archive,
+                Some(release.version),
+                None,
+            )
+        }
+        AddonSource::Git { url, reference } => {
+            let git = Git::new(fetcher.cache().clone(), reporter);
+            let rev = git.resolve(url, reference.as_deref())?;
+            let export = git.export(url, &rev)?;
+            let source = Source::Git {
+                url: url.clone(),
+                reference: reference.clone(),
+                rev,
+            };
+            (source, export.to_path_buf(), None, Some(export))
         }
     };
-    let (sha256, archive_path) = fetcher.fetch_unpinned(&url)?;
     let archive = Archive::open(&archive_path)?;
     let name = match name {
         Some(name) => name.clone(),
         None => {
-            let name = detect_name(archive.tree(), source)?;
+            let name = detect_name(archive.tree(), source, path)?;
             ensure_managed(project, &name, &state)?;
             name
         }
     };
-    let resolved = layout::resolve(archive.tree(), &name, path, false)
-        .with_context(|| format!("cannot add `{name}` from {url}"))?;
+    let is_git = matches!(pinned, Source::Git { .. });
+    let resolved = layout::resolve(archive.tree(), &name, path, is_git)
+        .with_context(|| format!("cannot add `{name}` from {}", pinned.url()))?;
     if let Some(warning) = &resolved.warning {
         reporter.warn(format!("{name}: {warning}"));
     }
 
     let addon = Addon {
         version: version_label.or(store_version),
-        source: Source::Url { url, sha256 },
+        source: pinned,
         path: Some(resolved.path),
     };
     let name = &name;
@@ -105,10 +126,20 @@ fn ensure_managed(project: &Project, name: &AddonName, state: &State) -> Result<
     Ok(())
 }
 
-/// The archive's only `addons/` folder, else the Asset Store asset's slug. Renaming an
-/// addon folder can break its `res://` paths, so a URL source without one needs a NAME.
-fn detect_name(tree: &dyn Tree, source: &AddonSource) -> Result<AddonName> {
+/// The last folder of `path`, else the source's only `addons/` folder, else the Asset
+/// Store asset's slug or the git repository's name. Renaming an addon folder can break
+/// its `res://` paths, so a zip URL without any of these needs a NAME.
+fn detect_name(
+    tree: &dyn Tree,
+    source: &AddonSource,
+    path: Option<&ArchivePath>,
+) -> Result<AddonName> {
     let pass_name = "pass the install folder name: gdget add NAME SOURCE";
+    if let Some(folder) = path.and_then(|path| path.segments().last()) {
+        return folder
+            .parse()
+            .with_context(|| format!("cannot install {folder}/ as is; {pass_name}"));
+    }
     if let Some(folder) = layout::single_addon_name(tree) {
         return folder
             .parse()
@@ -119,8 +150,21 @@ fn detect_name(tree: &dyn Tree, source: &AddonSource) -> Result<AddonName> {
             .asset
             .parse()
             .with_context(|| format!("cannot name the addon after `{asset}`; {pass_name}")),
+        AddonSource::Git { url, .. } => {
+            let repo = repo_name(url);
+            repo.parse().with_context(|| {
+                format!("cannot name the addon after the repository `{repo}`; {pass_name}")
+            })
+        }
         AddonSource::Url(_) => bail!("the archive has no single addons/ folder; {pass_name}"),
     }
+}
+
+/// The last path segment of a repository URL, without `.git`.
+fn repo_name(url: &str) -> &str {
+    let url = url.trim_end_matches('/');
+    let last = url.rsplit(['/', ':']).next().unwrap_or(url);
+    last.strip_suffix(".git").unwrap_or(last)
 }
 
 /// Overrides addon `name` with the local folder `path` and links it. Without a name, the
@@ -257,4 +301,25 @@ pub(crate) fn remove(project: &Project, name: &AddonName, reporter: Reporter) ->
         ));
     }
     sync_only(project, name, reporter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_name_is_the_last_segment_without_dot_git() {
+        for (url, name) in [
+            (
+                "https://github.com/DevPrice/godot-addons.git",
+                "godot-addons",
+            ),
+            ("https://github.com/DevPrice/godot-addons/", "godot-addons"),
+            ("ssh://git@host/o/gut.v9.git", "gut.v9"),
+            ("git@github.com:DevPrice/message_bus.git", "message_bus"),
+            ("git@host:flat.git", "flat"),
+        ] {
+            assert_eq!(repo_name(url), name, "{url}");
+        }
+    }
 }

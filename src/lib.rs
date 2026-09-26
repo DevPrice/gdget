@@ -63,6 +63,7 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
             source,
             path,
             version_label,
+            ..
         } => edit::add(
             &project,
             name.as_ref(),

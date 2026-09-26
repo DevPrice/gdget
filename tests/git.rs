@@ -1,9 +1,139 @@
 mod support;
 
+use gdget::manifest::{Addon, Manifest, Source};
 use support::{Fixture, run};
 
 fn entry(name: &str, url: &str, rev: &str, extra: &str) -> String {
     format!("[addons.{name}]\ngit = \"{url}\"\nrev = \"{rev}\"\n{extra}")
+}
+
+fn pinned(fx: &Fixture, name: &str) -> Addon {
+    Manifest::load(&fx.root().join("addons.toml"))
+        .unwrap()
+        .addons[&name.parse().unwrap()]
+        .clone()
+}
+
+fn git_source(url: &str, reference: Option<&str>, rev: &str) -> Source {
+    Source::Git {
+        url: url.to_owned(),
+        reference: reference.map(str::to_owned),
+        rev: rev.parse().unwrap(),
+    }
+}
+
+#[test]
+fn add_pins_one_folder_of_a_repo_named_after_the_folder() {
+    let fx = Fixture::new();
+    let rev = fx.remotes.commit(
+        "godot-addons",
+        &[
+            ("inventory/inventory.gd", "inventory"),
+            ("utils/utils.gd", "utils"),
+        ],
+    );
+    let url = fx.remotes.url("godot-addons");
+
+    let out = run(fx.gdget().args(["add", &url, "--path", "inventory"]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stdout
+            .contains(&format!("Pinned inventory ({})", &rev[..12])),
+        "{out:?}"
+    );
+    assert_eq!(out.stdout.matches("Fetching").count(), 1, "{out:?}");
+    assert_eq!(fx.read("addons/inventory/inventory.gd"), "inventory");
+    assert!(!fx.addon("utils").exists());
+
+    let addon = pinned(&fx, "inventory");
+    assert_eq!(addon.source, git_source(&url, None, &rev));
+    assert_eq!(addon.path.unwrap().to_string(), "inventory");
+}
+
+#[test]
+fn add_records_the_ref_and_readding_moves_the_pin() {
+    let fx = Fixture::new();
+    let url = fx.remotes.url("slang");
+    let tagged = fx
+        .remotes
+        .commit("slang", &[("addons/slang/plugin.cfg", "1")]);
+    fx.remotes.git("slang", &["tag", "-a", "v1", "-m", "v1"]);
+    let head = fx
+        .remotes
+        .commit("slang", &[("addons/slang/plugin.cfg", "2")]);
+
+    let out = run(fx.gdget().args(["add", &url, "--ref", "v1"]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(fx.read("addons/slang/plugin.cfg"), "1");
+    let addon = pinned(&fx, "slang");
+    assert_eq!(addon.source, git_source(&url, Some("v1"), &tagged));
+    assert_eq!(addon.path.unwrap().to_string(), "addons/slang");
+
+    let out = run(fx.gdget().args(["add", "slang", &url, "--ref", "main"]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stdout
+            .contains(&format!("Updated slang (main@{})", &head[..12])),
+        "{out:?}"
+    );
+    assert_eq!(fx.read("addons/slang/plugin.cfg"), "2");
+    assert_eq!(
+        pinned(&fx, "slang").source,
+        git_source(&url, Some("main"), &head)
+    );
+}
+
+#[test]
+fn add_installs_a_flat_repo_under_the_repo_name() {
+    let fx = Fixture::new();
+    let rev = fx
+        .remotes
+        .commit("message_bus", &[("message_bus.gd", "bus")]);
+
+    let out = run(fx.gdget().args(["add", &fx.remotes.url("message_bus")]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(fx.read("addons/message_bus/message_bus.gd"), "bus");
+    let addon = pinned(&fx, "message_bus");
+    assert_eq!(addon.path.unwrap().to_string(), ".");
+    assert_eq!(
+        addon.source,
+        git_source(&fx.remotes.url("message_bus"), None, &rev)
+    );
+}
+
+#[test]
+fn git_flag_treats_a_url_without_dot_git_as_a_repository() {
+    let fx = Fixture::new();
+    fx.remotes.commit("plain", &[("plugin.cfg", "p")]);
+    let url = "https://example.test/plain";
+
+    let out = run(fx.gdget().args(["add", "plain", url, "--git"]));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(fx.read("addons/plain/plugin.cfg"), "p");
+    assert!(matches!(pinned(&fx, "plain").source, Source::Git { .. }));
+}
+
+#[test]
+fn add_of_an_unknown_ref_changes_nothing() {
+    let fx = Fixture::new();
+    fx.remotes.commit("a", &[("plugin.cfg", "a")]);
+
+    let out = run(fx
+        .gdget()
+        .args(["add", &fx.remotes.url("a"), "--ref", "nope"]));
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("cannot fetch `nope`"), "{out:?}");
+    assert!(!fx.root().join("addons.toml").exists());
+}
+
+#[test]
+fn ref_without_a_repository_is_a_usage_error() {
+    let fx = Fixture::new();
+    let out = run(fx
+        .gdget()
+        .args(["add", "https://example.test/a.zip", "--ref", "main"]));
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(out.stderr.contains("--ref applies only to git"), "{out:?}");
 }
 
 #[test]
