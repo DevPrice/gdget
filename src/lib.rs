@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod cli;
 pub mod digest;
+pub mod edit;
 pub mod fetch;
 pub mod fsutil;
 pub mod install;
@@ -39,11 +40,29 @@ pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     let project = Project::discover(&cwd)?;
     match cli.command {
-        Command::Sync { force, check } => {
-            sync::sync(&project, SyncOptions { force, check }, reporter)
-        }
-        Command::Add { .. } => anyhow::bail!("add is not implemented yet"),
-        Command::Remove { .. } => anyhow::bail!("remove is not implemented yet"),
+        Command::Sync { force, check } => sync::sync(
+            &project,
+            SyncOptions {
+                force,
+                check,
+                only: None,
+            },
+            reporter,
+        ),
+        Command::Add {
+            name,
+            url,
+            path,
+            version_label,
+        } => edit::add(
+            &project,
+            &name,
+            &url,
+            path.as_deref(),
+            version_label,
+            reporter,
+        ),
+        Command::Remove { name } => edit::remove(&project, &name, reporter),
         Command::Status => status::status(&project),
     }
 }

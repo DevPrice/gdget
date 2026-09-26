@@ -15,10 +15,27 @@ use crate::project::Project;
 use crate::report::Reporter;
 use crate::state::State;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SyncOptions {
     pub force: bool,
     pub check: bool,
+    /// Sync only this addon, leaving every other folder in `addons/` alone.
+    pub only: Option<AddonName>,
+}
+
+/// The addons that should be present: everything pinned or overridden, narrowed to
+/// `only` when set.
+fn desired<'a>(
+    manifest: &'a Manifest,
+    overrides: &'a Overrides,
+    only: Option<&AddonName>,
+) -> BTreeSet<&'a AddonName> {
+    manifest
+        .addons
+        .keys()
+        .chain(overrides.addons.keys())
+        .filter(|name| only.is_none_or(|only| only == *name))
+        .collect()
 }
 
 /// What is at `addons/<name>` right now.
@@ -122,14 +139,7 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
     let overrides = Overrides::load(&project.overrides_path())?;
     let mut state = State::load(&project.state_dir())?;
 
-    let steps = plan(
-        project,
-        &manifest,
-        &overrides,
-        &state,
-        options.force,
-        reporter,
-    )?;
+    let steps = plan(project, &manifest, &overrides, &state, &options, reporter)?;
     if options.check {
         return Ok(report_check(&steps, reporter));
     }
@@ -204,11 +214,7 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
         state.save(&project.state_dir())?;
     }
 
-    let desired: BTreeSet<&AddonName> = manifest
-        .addons
-        .keys()
-        .chain(overrides.addons.keys())
-        .collect();
+    let desired = desired(&manifest, &overrides, options.only.as_ref());
     warn_unignored(project, &desired, reporter);
 
     let total = desired.len();
@@ -235,16 +241,13 @@ fn plan(
     manifest: &Manifest,
     overrides: &Overrides,
     state: &State,
-    force: bool,
+    options: &SyncOptions,
     reporter: Reporter,
 ) -> Result<BTreeMap<AddonName, Step>> {
     let addons_dir = project.addons_dir();
+    let force = options.force;
     let mut steps = BTreeMap::new();
-    let desired: BTreeSet<&AddonName> = manifest
-        .addons
-        .keys()
-        .chain(overrides.addons.keys())
-        .collect();
+    let desired = desired(manifest, overrides, options.only.as_ref());
 
     for name in &desired {
         let dir = addons_dir.join(name.as_str());
@@ -318,7 +321,8 @@ fn plan(
         else {
             continue;
         };
-        if desired.contains(&name) {
+        let excluded = options.only.as_ref().is_some_and(|only| *only != name);
+        if desired.contains(&name) || excluded {
             continue;
         }
         let dir = entry.path();
