@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use tempfile::TempDir;
 
+use crate::link;
+
 const TRASH_PREFIX: &str = "old-";
 
 /// gdget's scratch space under `.gdget/`, next to `addons/` so every rename between them
@@ -71,24 +73,45 @@ impl Workspace {
     /// Replaces `target` with the staged folder. Either the new folder is in place, or
     /// `target` is unchanged and an error explains why.
     pub fn swap_in(&self, staged: Staged, target: &Path) -> Result<()> {
-        let old = self.move_to_trash(target)?;
-        if let Err(e) = std::fs::rename(staged.path(), target) {
-            if let Some(old) = old
-                && let Err(restore) = std::fs::rename(old.path().join("addon"), target)
-            {
-                let rescued = self.rescue(old);
-                return Err(restore).with_context(|| {
-                    format!(
-                        "cannot install {} ({e}) and cannot put the previous version back; \
-                         it is in {}",
-                        target.display(),
-                        rescued.display()
-                    )
-                });
+        self.replace(target, || {
+            std::fs::rename(staged.path(), target)
+                .with_context(|| format!("cannot install {}", target.display()))
+        })
+    }
+
+    /// Replaces `target` with a link to `source`, with the same guarantee as `swap_in`.
+    pub fn link_in(&self, source: &Path, target: &Path) -> Result<()> {
+        self.replace(target, || link::create(source, target))
+    }
+
+    /// Removes `target` (for a link, only the link), or leaves it untouched and explains
+    /// why not.
+    pub fn remove(&self, target: &Path) -> Result<()> {
+        self.take_old(target).map(drop)
+    }
+
+    fn replace(&self, target: &Path, put: impl FnOnce() -> Result<()>) -> Result<()> {
+        let old = self.take_old(target)?;
+        let Err(error) = put() else {
+            return Ok(());
+        };
+        let restored = match old {
+            None => Ok(()),
+            Some(Old::Link(source)) => link::create(&source, target),
+            Some(Old::Dir(slot)) => {
+                std::fs::rename(slot.path().join("addon"), target).map_err(|e| {
+                    let rescued = self.rescue(slot);
+                    anyhow!("{e}; the previous version is in {}", rescued.display())
+                })
             }
-            return Err(e).with_context(|| format!("cannot install {}", target.display()));
+        };
+        match restored {
+            Ok(()) => Err(error),
+            Err(restore) => Err(error.context(format!(
+                "cannot put the previous {} back: {restore:#}",
+                target.display()
+            ))),
         }
-        Ok(())
     }
 
     /// Keeps a trashed folder out of the next run's cleanup and returns where it is.
@@ -102,20 +125,23 @@ impl Workspace {
         }
     }
 
-    /// Removes `target`, or leaves it untouched and explains why not.
-    pub fn remove(&self, target: &Path) -> Result<()> {
-        self.move_to_trash(target).map(drop)
-    }
-
-    /// Moves `target` into the trash, which is deleted when the returned guard drops.
-    /// Deleting after the move means a locked file fails the rename, before anything
-    /// has changed, rather than halfway through a recursive delete.
-    fn move_to_trash(&self, target: &Path) -> Result<Option<TempDir>> {
-        if target.symlink_metadata().is_err() {
+    /// Clears `target` out of the way, returning what is needed to put it back.
+    ///
+    /// Folders move into the trash, which is deleted when the returned guard drops, so a
+    /// locked file fails the rename before anything has changed rather than halfway
+    /// through a recursive delete. Links are removed directly and never moved into the
+    /// trash, where a recursive delete could reach through them into the linked folder.
+    fn take_old(&self, target: &Path) -> Result<Option<Old>> {
+        let Ok(meta) = target.symlink_metadata() else {
             return Ok(None);
-        }
+        };
         if let Some(locked) = find_locked_file(target) {
             return Err(in_use(&locked));
+        }
+        if meta.file_type().is_symlink() {
+            let source = link::target(target)?;
+            link::remove(target)?;
+            return Ok(Some(Old::Link(source)));
         }
         let slot = tempfile::Builder::new()
             .prefix(TRASH_PREFIX)
@@ -130,8 +156,14 @@ impl Workspace {
                 }
             })
             .with_context(|| format!("cannot replace {}", target.display()))?;
-        Ok(Some(slot))
+        Ok(Some(Old::Dir(slot)))
     }
+}
+
+/// What `take_old` moved out of the way.
+enum Old {
+    Dir(TempDir),
+    Link(PathBuf),
 }
 
 fn in_use(path: &Path) -> anyhow::Error {
@@ -251,6 +283,36 @@ mod tests {
         fill(&staged.path(), "half");
         drop(staged);
         assert!(is_empty(&state.join("staging")));
+    }
+
+    #[test]
+    fn links_replace_copies_and_back_without_touching_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::prepare(&temp.path().join(".gdget")).unwrap();
+        let source = temp.path().join("dev");
+        fill(&source, "dev build");
+        let target = temp.path().join("a");
+
+        let staged = workspace.stage("a").unwrap();
+        fill(&staged.path(), "pinned");
+        workspace.swap_in(staged, &target).unwrap();
+
+        workspace.link_in(&source, &target).unwrap();
+        assert!(link::is_link(&target));
+        assert_eq!(read(&target), "dev build");
+
+        let staged = workspace.stage("a").unwrap();
+        fill(&staged.path(), "pinned");
+        workspace.swap_in(staged, &target).unwrap();
+        assert!(!link::is_link(&target));
+        assert_eq!(read(&target), "pinned");
+        assert_eq!(read(&source), "dev build");
+
+        workspace.link_in(&source, &target).unwrap();
+        workspace.remove(&target).unwrap();
+        assert!(target.symlink_metadata().is_err());
+        assert_eq!(read(&source), "dev build");
+        assert!(is_empty(&temp.path().join(".gdget").join("trash")));
     }
 
     #[test]

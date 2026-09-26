@@ -5,10 +5,12 @@ pub mod fetch;
 pub mod fsutil;
 pub mod install;
 pub mod layout;
+pub mod link;
 pub mod manifest;
 pub mod marker;
 pub mod project;
 pub mod report;
+pub mod state;
 
 use crate::cli::{Cli, Command};
 use crate::report::Reporter;
