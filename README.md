@@ -23,18 +23,19 @@ cargo install gdget --locked
 ## Quick start
 
 1.  In your Godot project folder (the one that contains `project.godot`), add an
-    addon:
+    addon from the [Godot Asset Store](https://store.godotengine.org):
 
     ```sh
-    gdget add NAME URL
+    gdget add PUBLISHER/ASSET
     ```
 
-    Replace the following:
+    Replace `PUBLISHER/ASSET` with the part of the asset's store address after
+    `/asset/`, such as `devprice/godot-slang`. To add a specific release, append
+    `@VERSION`, as in `devprice/godot-slang@v6.0.0`. To add an addon from any other
+    site, pass the link to its zip instead.
 
-    - `NAME`: the folder name the addon installs to, as in `addons/NAME/`.
-    - `URL`: the addon's release zip.
-
-    gdget downloads the zip, pins its hash in `addons.toml`, and installs the addon.
+    gdget downloads the addon, pins its hash in `addons.toml`, and installs it to
+    `addons/NAME/`.
 
 2.  Add the installed addon and gdget's working files to `.gitignore`:
 

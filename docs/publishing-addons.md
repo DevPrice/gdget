@@ -25,14 +25,23 @@ install.
     characters `<>"|?*`, and no reserved names such as `CON` or `NUL`. gdget rejects
     these names on every platform so that an addon installs the same way everywhere.
 
-5.  Attach the zip to a GitHub release.
+5.  Publish the zip as a release on the [Godot Asset Store](https://store.godotengine.org),
+    attach it to a GitHub release, or both.
+
+    Put only one folder under `addons/`. gdget then installs your addon under the right
+    name without the user passing one.
 
 ## Test the release
 
-To check that gdget can install the zip, run this command in a test project:
+To check that gdget can install the zip, run one of these commands in a test project:
 
 ```sh
-gdget add NAME URL
+gdget add PUBLISHER/ASSET@VERSION
+gdget add URL
 ```
 
-Replace `URL` with the zip's download link from the release page.
+Replace the following:
+
+- `PUBLISHER/ASSET@VERSION`: your asset on the Asset Store, as in
+  `devprice/godot-slang@v6.0.0`.
+- `URL`: the zip's download link from the release page.
