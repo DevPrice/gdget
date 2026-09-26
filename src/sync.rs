@@ -98,7 +98,7 @@ pub(crate) fn resolve_override(
             root.display()
         );
     }
-    let resolved = layout::resolve(&DirTree::new(&root), name, None)
+    let resolved = layout::resolve(&DirTree::new(&root), name, None, false)
         .with_context(|| format!("cannot use the override at {}", root.display()))?;
     let source = resolved
         .path
@@ -483,7 +483,12 @@ fn install_copy(
     reporter: Reporter,
 ) -> Result<()> {
     let mut archive = Archive::open(archive_path)?;
-    let resolved = layout::resolve(archive.tree(), name, addon.path.as_ref())?;
+    let resolved = layout::resolve(
+        archive.tree(),
+        name,
+        addon.path.as_ref(),
+        matches!(addon.source, Source::Git { .. }),
+    )?;
     if let Some(warning) = resolved.warning {
         reporter.warn(format!("{name}: {warning}"));
     }

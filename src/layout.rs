@@ -138,12 +138,15 @@ pub(crate) struct Resolved {
 /// 3. The root, then the wrapper folder, if it is an addon folder (holds `plugin.cfg` or a
 ///    `.gdextension` file) or, for a directory, is itself named `<name>`.
 /// 4. The only folder under `addons/`, with a warning because it gets renamed.
+/// 5. With `root_fallback`, for git repositories, the root when nothing is under
+///    `addons/`: GDScript-only addons often have no `plugin.cfg` to recognize them by.
 ///
 /// Anything else is an error that lists what was found and asks for `path`.
 pub(crate) fn resolve(
     tree: &dyn Tree,
     name: &AddonName,
     explicit: Option<&ArchivePath>,
+    root_fallback: bool,
 ) -> Result<Resolved> {
     if let Some(path) = explicit {
         if !tree.is_dir(path.segments()) {
@@ -180,6 +183,7 @@ pub(crate) fn resolve(
                  expect the original folder name"
             )),
         }),
+        [] if root_fallback => Ok(found(root)),
         [] => {
             let top_level = tree
                 .children(&[])
@@ -283,7 +287,7 @@ mod tests {
     }
 
     fn resolve_in(files: &[&str], name: &str) -> Result<Resolved> {
-        resolve(&tree(files), &name.parse().unwrap(), None)
+        resolve(&tree(files), &name.parse().unwrap(), None, false)
     }
 
     fn resolved_path(files: &[&str], name: &str) -> String {
@@ -300,11 +304,11 @@ mod tests {
     fn explicit_path_wins_and_must_exist() {
         let files = ["addons/x/plugin.cfg", "other/y.gd"];
         let path: ArchivePath = "other".parse().unwrap();
-        let resolved = resolve(&tree(&files), &"x".parse().unwrap(), Some(&path)).unwrap();
+        let resolved = resolve(&tree(&files), &"x".parse().unwrap(), Some(&path), false).unwrap();
         assert_eq!(resolved.path, path);
 
         let missing: ArchivePath = "nope".parse().unwrap();
-        let err = resolve(&tree(&files), &"x".parse().unwrap(), Some(&missing)).unwrap_err();
+        let err = resolve(&tree(&files), &"x".parse().unwrap(), Some(&missing), false).unwrap_err();
         assert!(
             err.to_string()
                 .contains("`path = \"nope\"` is not a folder")
@@ -375,6 +379,22 @@ mod tests {
     }
 
     #[test]
+    fn git_repositories_fall_back_to_the_root() {
+        let git = |files: &[&str]| resolve(&tree(files), &"c".parse().unwrap(), None, true);
+        let flat = ["a.gd", "a.gd.uid", "sub/b.gd"];
+        assert_eq!(git(&flat).unwrap(), found(ArchivePath::root()));
+
+        let recognized = ["addons/c/plugin.cfg", "addons/c/c.gd", "demo/main.gd"];
+        assert_eq!(git(&recognized).unwrap().path.to_string(), "addons/c");
+
+        let err = format!(
+            "{:#}",
+            git(&["addons/a/plugin.cfg", "addons/b/plugin.cfg"]).unwrap_err()
+        );
+        assert!(err.contains("cannot tell which folder"), "{err}");
+    }
+
+    #[test]
     fn single_addon_name_needs_exactly_one_addons_folder() {
         let name = |files: &[&str]| single_addon_name(&tree(files));
         assert_eq!(name(&["addons/slang/plugin.cfg"]).as_deref(), Some("slang"));
@@ -393,9 +413,22 @@ mod tests {
         std::fs::create_dir_all(addon.join("bin")).unwrap();
         std::fs::write(addon.join("bin").join("x.dll"), "").unwrap();
 
-        let resolved = resolve(&DirTree::new(&addon), &"godot-slang".parse().unwrap(), None);
+        let resolved = resolve(
+            &DirTree::new(&addon),
+            &"godot-slang".parse().unwrap(),
+            None,
+            false,
+        );
         assert_eq!(resolved.unwrap().path, ArchivePath::root());
-        assert!(resolve(&DirTree::new(&addon), &"other".parse().unwrap(), None).is_err());
+        assert!(
+            resolve(
+                &DirTree::new(&addon),
+                &"other".parse().unwrap(),
+                None,
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -409,6 +442,7 @@ mod tests {
             &DirTree::new(temp.path()),
             &"godot-slang".parse().unwrap(),
             None,
+            false,
         );
         assert_eq!(resolved.unwrap().path.to_string(), "addons/godot-slang");
     }

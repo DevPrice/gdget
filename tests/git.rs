@@ -40,6 +40,28 @@ fn sync_installs_the_pinned_commit_and_reinstalls_from_the_cache() {
 }
 
 #[test]
+fn a_flat_gdscript_repo_installs_its_root() {
+    let fx = Fixture::new();
+    let rev = fx.remotes.commit(
+        "message_bus",
+        &[
+            ("message_bus.gd", "bus"),
+            ("message_bus.gd.uid", "uid://bus"),
+        ],
+    );
+    fx.write_manifest(&[&entry(
+        "message_bus",
+        &fx.remotes.url("message_bus"),
+        &rev,
+        "",
+    )]);
+
+    let out = run(fx.gdget().arg("sync"));
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(fx.read("addons/message_bus/message_bus.gd"), "bus");
+}
+
+#[test]
 fn folders_of_one_repo_install_separately_from_one_fetch() {
     let fx = Fixture::new();
     let rev = fx.remotes.commit(

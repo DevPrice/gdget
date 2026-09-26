@@ -64,7 +64,7 @@ pub(crate) fn add(
             name
         }
     };
-    let resolved = layout::resolve(archive.tree(), &name, path)
+    let resolved = layout::resolve(archive.tree(), &name, path, false)
         .with_context(|| format!("cannot add `{name}` from {url}"))?;
     if let Some(warning) = &resolved.warning {
         reporter.warn(format!("{name}: {warning}"));
