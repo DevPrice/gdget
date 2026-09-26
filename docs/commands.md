@@ -22,6 +22,8 @@ gdget sync [--force | --check]
 `sync` downloads and verifies every archive it needs before it changes `addons/`. If a
 download fails or a hash doesn't match, `sync` stops without changing anything.
 
+A project without `addons.toml` can still sync if it has local overrides.
+
 ## gdget add
 
 Downloads an addon, pins its hash and folder in `addons.toml`, and installs it.
@@ -71,6 +73,36 @@ gdget remove NAME
 
 If the addon has local changes, gdget removes the entry but keeps the folder, and exits
 with status 1. To delete the folder anyway, run `gdget sync --force`.
+
+## gdget link
+
+Uses a local folder in place of an addon's pinned release. gdget records the override in
+`addons.local.toml` and links `addons/NAME/` to the folder. For details, see
+[Develop an addon locally](local-development.md).
+
+```sh
+gdget link [NAME] PATH
+```
+
+Replace the following:
+
+- `NAME`: optional. The install folder name. If you omit it, gdget uses the name of the
+  folder's only folder under `addons/`, or the folder's own name if it's an addon folder.
+- `PATH`: the local build: the addon folder itself, or a folder laid out like the release
+  zip. If `PATH` is at most two folders above the project folder, as a sibling checkout
+  is, gdget records it as a relative path so it keeps working if you move both.
+  Otherwise, gdget records the absolute path.
+
+To point an override at a different folder, run `gdget link` again.
+
+## gdget unlink
+
+Removes an addon's override from `addons.local.toml` and reinstalls its pinned release.
+If the addon isn't in `addons.toml`, gdget removes the link.
+
+```sh
+gdget unlink NAME
+```
 
 ## gdget status
 
