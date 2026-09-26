@@ -1,8 +1,108 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+
+use gdget::digest::Sha256;
+
+/// Builds a zip archive in memory from `(path, contents)` pairs.
+pub fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (path, contents) in files {
+        zip.start_file(*path, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(contents.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// A Godot project, a private archive cache and a fixture server for one test.
+pub struct Fixture {
+    pub project: tempfile::TempDir,
+    pub cache: tempfile::TempDir,
+    pub server: TestServer,
+}
+
+impl Fixture {
+    pub fn new() -> Self {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("project.godot"), "").unwrap();
+        Self {
+            project,
+            cache: tempfile::tempdir().unwrap(),
+            server: TestServer::start(),
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        self.project.path()
+    }
+
+    pub fn addon(&self, name: &str) -> PathBuf {
+        self.root().join("addons").join(name)
+    }
+
+    /// Serves a zip of `files` at `/<file>` and returns a manifest entry pinning it.
+    pub fn publish(&self, name: &str, file: &str, files: &[(&str, &str)]) -> String {
+        let bytes = zip_bytes(files);
+        let sha256 = Sha256::of_bytes(&bytes);
+        let url = self.server.serve(&format!("/{file}"), bytes);
+        format!("[addons.{name}]\nurl = \"{url}\"\nsha256 = \"{sha256}\"\n")
+    }
+
+    pub fn write_manifest(&self, entries: &[&str]) {
+        std::fs::write(self.root().join("addons.toml"), entries.join("\n")).unwrap();
+    }
+
+    pub fn write(&self, relative: &str, contents: &str) {
+        let path = self.root().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    pub fn read(&self, relative: &str) -> String {
+        std::fs::read_to_string(self.root().join(relative)).unwrap()
+    }
+
+    pub fn gdget(&self) -> assert_cmd::Command {
+        let mut cmd = assert_cmd::Command::cargo_bin("gdget").unwrap();
+        cmd.current_dir(self.root())
+            .env("GDGET_CACHE_DIR", self.cache.path())
+            .env("NO_COLOR", "1")
+            .env_remove("GITHUB_ACTIONS")
+            .env_remove("GITHUB_TOKEN");
+        cmd
+    }
+}
+
+/// Output of a finished command, for asserting on text.
+pub struct Run {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn run(cmd: &mut assert_cmd::Command) -> Run {
+    let output = cmd.output().unwrap();
+    Run {
+        code: output.status.code().unwrap(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+impl std::fmt::Debug for Run {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "exit {}\n--- stdout\n{}--- stderr\n{}",
+            self.code, self.stdout, self.stderr
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {

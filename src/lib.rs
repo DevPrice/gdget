@@ -11,9 +11,14 @@ pub mod marker;
 pub mod project;
 pub mod report;
 pub mod state;
+pub mod sync;
+
+use anyhow::Context;
 
 use crate::cli::{Cli, Command};
+use crate::project::Project;
 use crate::report::Reporter;
+use crate::sync::SyncOptions;
 
 /// How a command finished when it did not hit a hard error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,13 +30,17 @@ pub enum Outcome {
     Failure,
 }
 
-pub fn run(cli: Cli, _reporter: Reporter) -> anyhow::Result<Outcome> {
+pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
     if let Some(dir) = &cli.directory {
         std::env::set_current_dir(dir)
-            .map_err(|e| anyhow::anyhow!("cannot change to {}: {e}", dir.display()))?;
+            .with_context(|| format!("cannot change to {}", dir.display()))?;
     }
+    let cwd = std::env::current_dir().context("cannot read the current directory")?;
+    let project = Project::discover(&cwd)?;
     match cli.command {
-        Command::Sync { .. } => anyhow::bail!("sync is not implemented yet"),
+        Command::Sync { force, check } => {
+            sync::sync(&project, SyncOptions { force, check }, reporter)
+        }
         Command::Add { .. } => anyhow::bail!("add is not implemented yet"),
         Command::Remove { .. } => anyhow::bail!("remove is not implemented yet"),
         Command::Status => anyhow::bail!("status is not implemented yet"),
