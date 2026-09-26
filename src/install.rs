@@ -373,6 +373,32 @@ mod tests {
     }
 
     #[test]
+    fn failed_replacement_restores_the_previous_folder_or_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join(".gdget");
+        let workspace = Workspace::prepare(&state).unwrap();
+        let target = temp.path().join("a");
+        fill(&target, "old");
+
+        let err = workspace
+            .replace(&target, || anyhow::bail!("boom"))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        assert_eq!(read(&target), "old");
+        assert!(is_empty(&state.join("trash")));
+
+        let source = temp.path().join("dev");
+        fill(&source, "dev");
+        workspace.link_in(&source, &target).unwrap();
+        workspace
+            .replace(&target, || anyhow::bail!("boom"))
+            .unwrap_err();
+        assert!(link::is_link(&target));
+        assert_eq!(read(&target), "dev");
+        link::remove(&target).unwrap();
+    }
+
+    #[test]
     fn dropped_stage_leaves_nothing() {
         let temp = tempfile::tempdir().unwrap();
         let state = temp.path().join(".gdget");

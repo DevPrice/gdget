@@ -212,17 +212,35 @@ fn check_reports_drift_without_changing_anything() {
 #[test]
 fn warns_when_installed_addons_are_not_gitignored() {
     let fx = Fixture::new();
-    let git = std::process::Command::new("git")
+    // Keep the developer's global and system git config (and global excludes, which git
+    // reads even without a config file) from deciding what counts as ignored.
+    let git_home = tempfile::tempdir().unwrap();
+    let excludes = git_home.path().join("ignore");
+    std::fs::write(&excludes, "").unwrap();
+    let config = git_home.path().join("gitconfig");
+    let excludes = excludes.to_string_lossy().replace('\\', "/");
+    std::fs::write(&config, format!("[core]\n\texcludesFile = {excludes}\n")).unwrap();
+
+    let init = std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(fx.root())
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .status();
-    if !git.is_ok_and(|status| status.success()) {
+    if !init.is_ok_and(|status| status.success()) {
         eprintln!("git is unavailable; skipping");
         return;
     }
     fx.write_manifest(&[&fx.publish("a", "a.zip", &[PLUGIN])]);
+    let gdget = || {
+        let mut cmd = fx.gdget();
+        cmd.env("GIT_CONFIG_GLOBAL", &config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("sync");
+        cmd
+    };
 
-    let out = run(fx.gdget().arg("sync"));
+    let out = run(&mut gdget());
     assert_eq!(out.code, 0, "{out:?}");
     assert!(
         out.stderr.contains("addons/a/ is not ignored by git"),
@@ -234,8 +252,48 @@ fn warns_when_installed_addons_are_not_gitignored() {
     );
 
     fx.write(".gitignore", "/addons/a/\n/.gdget/\n");
-    let out = run(fx.gdget().arg("sync"));
+    let out = run(&mut gdget());
     assert!(!out.stderr.contains("not ignored"), "{out:?}");
+}
+
+#[test]
+fn check_reports_outdated_extra_and_modified() {
+    let fx = Fixture::new();
+    let a1 = fx.publish("a", "a1.zip", &[PLUGIN]);
+    let b = fx.publish("b", "b.zip", &[("addons/b/plugin.cfg", "b")]);
+    let c = fx.publish("c", "c1.zip", &[("addons/c/c.gd", "1")]);
+    fx.write_manifest(&[&a1, &b, &c]);
+    assert_eq!(run(fx.gdget().arg("sync")).code, 0);
+
+    let a2 = fx.publish("a", "a2.zip", &[("addons/a/plugin.cfg", "v2")]);
+    let c2 = fx.publish("c", "c2.zip", &[("addons/c/c.gd", "2")]);
+    fx.write_manifest(&[&a2, &c2]);
+    fx.write("addons/c/c.gd", "edited");
+    let requests = fx.server.requests().len();
+
+    let out = run(fx.gdget().args(["sync", "--check"]));
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stdout.contains("Outdated a"), "{out:?}");
+    assert!(out.stdout.contains("Extra b"), "{out:?}");
+    assert!(out.stderr.contains("addons/c has local changes"), "{out:?}");
+    assert_eq!(fx.server.requests().len(), requests);
+    assert!(fx.addon("b").exists());
+    assert_eq!(fx.read("addons/c/c.gd"), "edited");
+}
+
+#[test]
+fn a_link_gdget_did_not_create_is_left_alone() {
+    let fx = Fixture::new();
+    fx.write_manifest(&[&fx.publish("a", "a.zip", &[PLUGIN])]);
+    fx.write("mine/a/plugin.cfg", "mine");
+    std::fs::create_dir_all(fx.root().join("addons")).unwrap();
+    gdget::link::create(&fx.root().join("mine").join("a"), &fx.addon("a")).unwrap();
+
+    let out = run(fx.gdget().arg("sync"));
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("not installed by gdget"), "{out:?}");
+    assert_eq!(fx.read("addons/a/plugin.cfg"), "mine");
+    gdget::link::remove(&fx.addon("a")).unwrap();
 }
 
 #[test]
