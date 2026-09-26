@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod digest;
+pub mod fetch;
 pub mod fsutil;
 pub mod manifest;
 pub mod project;

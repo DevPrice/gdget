@@ -85,8 +85,9 @@ directory, and tries these rules in order:
   - `~/.cache/gdget`
 
   Archives are stored at `sha256/<hash>.zip` and are hashed while they stream to a temp
-  file, then renamed into the cache. A cache hit is hashed again before use. Any mismatch
-  is a hard error.
+  file, then renamed into the cache. A cache hit is hashed again before use. A download
+  whose hash doesn't match the pin is a hard error. A corrupt cache entry produces a
+  warning, is deleted, and is downloaded again.
 - **Two phases:** `sync` fetches and verifies every archive it needs before it touches
   `addons/`, so a network failure never leaves a partial state.
 - **Extraction:** into `.gdget/staging/<name>-<rand>/`. `.gdget/` is on the same volume as

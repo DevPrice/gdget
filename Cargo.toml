@@ -10,11 +10,14 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+sha2 = "0.11.0"
 tempfile = "3.27.0"
 toml_edit = "0.25.15"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+tiny_http = "0.12.0"
 
 [profile.release]
 lto = true
