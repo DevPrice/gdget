@@ -569,6 +569,29 @@ mod tests {
     }
 
     #[test]
+    fn names_with_dots_are_quoted_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        let name = name("gut.v9");
+        let mut file = ManifestFile::open(&path).unwrap();
+        file.set(
+            &name,
+            &Addon {
+                version: None,
+                source: Source::Url {
+                    url: "https://x/gut.zip".into(),
+                    sha256: HASH.parse().unwrap(),
+                },
+                path: None,
+            },
+        );
+        file.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[addons.\"gut.v9\"]"), "{text}");
+        assert!(Manifest::parse(&text).unwrap().addons.contains_key(&name));
+    }
+
+    #[test]
     fn new_manifest_uses_dotted_table_headers() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(MANIFEST_FILE);
