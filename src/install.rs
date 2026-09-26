@@ -135,8 +135,10 @@ impl Workspace {
     /// through a recursive delete. Links are removed directly and never moved into the
     /// trash, where a recursive delete could reach through them into the linked folder.
     fn take_old(&self, target: &Path) -> Result<Option<Old>> {
-        let Ok(meta) = target.symlink_metadata() else {
-            return Ok(None);
+        let meta = match target.symlink_metadata() {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", target.display())),
         };
         if let Some(locked) = find_locked_file(target) {
             return Err(in_use(&locked));

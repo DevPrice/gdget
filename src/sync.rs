@@ -53,8 +53,10 @@ pub enum Installed {
 }
 
 pub fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Installed> {
-    let Ok(meta) = dir.symlink_metadata() else {
-        return Ok(Installed::Missing);
+    let meta = match dir.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Installed::Missing),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
     };
     if meta.file_type().is_symlink() {
         let source = link::target(dir)?;

@@ -63,7 +63,9 @@ impl Archive {
         let mut entries = Vec::with_capacity(zip.len());
         let mut tree = EntryTree::default();
         for index in 0..zip.len() {
-            let entry = zip.by_index_raw(index)?;
+            let entry = zip
+                .by_index_raw(index)
+                .with_context(|| format!("cannot read entry {index} of {}", path.display()))?;
             let segments = entry_segments(entry.name())
                 .with_context(|| format!("unsafe entry in {}", path.display()))?;
             if entry.is_dir() {
@@ -109,7 +111,13 @@ impl Archive {
                 .iter()
                 .fold(dest.to_owned(), |path, s| path.join(s));
             let relative = relative.join("/");
-            let mut entry = self.zip.by_index(index)?;
+            let mut entry = self.zip.by_index(index).with_context(|| {
+                format!(
+                    "cannot read {relative} from {} (gdget supports stored and deflate \
+                     compression)",
+                    self.path.display()
+                )
+            })?;
             if entry.is_dir() {
                 std::fs::create_dir_all(&out)
                     .with_context(|| format!("cannot create {}", out.display()))?;

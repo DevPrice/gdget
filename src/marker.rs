@@ -141,8 +141,9 @@ impl Marker {
             match on_disk.remove(path) {
                 None => changes.push(Change::Removed(path.clone())),
                 Some(file) => {
-                    let actual = Sha256::of_file(&file).ok();
-                    if actual != Some(*expected) {
+                    let actual = Sha256::of_file(&file)
+                        .with_context(|| format!("cannot read {}", file.display()))?;
+                    if actual != *expected {
                         changes.push(Change::Modified(path.clone()));
                     }
                 }
@@ -186,7 +187,10 @@ fn collect_files(
         } else {
             format!("{prefix}/{name}")
         };
-        if entry.file_type()?.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot read {}", entry.path().display()))?;
+        if file_type.is_dir() {
             collect_files(&entry.path(), &relative, out)?;
         } else {
             out.insert(relative, entry.path());
@@ -257,6 +261,22 @@ mod tests {
         std::fs::write(temp.path().join("icon.png.import"), "[remap]").unwrap();
         std::fs::write(temp.path().join("~lib.dll"), "hot reload copy").unwrap();
         assert_eq!(marker.changes(temp.path()).unwrap(), vec![]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_file_is_an_error_not_a_modification() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let marker = install(temp.path(), &[("a.gd", "code")]);
+        let _exclusive = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(temp.path().join("a.gd"))
+            .unwrap();
+        let err = format!("{:#}", marker.changes(temp.path()).unwrap_err());
+        assert!(err.contains("cannot read"), "{err}");
     }
 
     #[test]
