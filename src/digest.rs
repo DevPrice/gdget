@@ -10,10 +10,6 @@ use sha2::Digest as _;
 pub struct Sha256([u8; 32]);
 
 impl Sha256 {
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
     pub fn of_bytes(bytes: &[u8]) -> Self {
         Self(sha2::Sha256::digest(bytes).into())
     }

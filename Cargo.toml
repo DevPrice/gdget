@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "Install pinned Godot addon dependencies from a committed manifest"
 license = "MIT"
+publish = false
 repository = "https://github.com/DevPrice/gdget"
 
 [dependencies]
@@ -21,6 +22,9 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 [dev-dependencies]
 assert_cmd = "2.2.2"
 tiny_http = "0.12.0"
+
+[lints.rust]
+unreachable_pub = "warn"
 
 [profile.release]
 lto = true

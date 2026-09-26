@@ -1,19 +1,24 @@
-pub mod archive;
+//! Internals of the `gdget` binary, exposed for its integration tests. Not a stable API.
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("gdget supports Unix and Windows only");
+
+mod archive;
 pub mod cli;
 pub mod digest;
-pub mod edit;
+mod edit;
 pub mod fetch;
-pub mod fsutil;
-pub mod install;
-pub mod layout;
+mod fsutil;
+mod install;
+mod layout;
 pub mod link;
 pub mod manifest;
-pub mod marker;
-pub mod project;
+mod marker;
+mod project;
 pub mod report;
-pub mod state;
-pub mod status;
-pub mod sync;
+mod state;
+mod status;
+mod sync;
 
 use anyhow::Context;
 
@@ -23,6 +28,7 @@ use crate::report::Reporter;
 use crate::sync::SyncOptions;
 
 /// How a command finished when it did not hit a hard error.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Success,
@@ -32,6 +38,7 @@ pub enum Outcome {
     Failure,
 }
 
+/// Runs one parsed command. Changes the process's working directory when `-C` is given.
 pub fn run(cli: Cli, reporter: Reporter) -> anyhow::Result<Outcome> {
     if let Some(dir) = &cli.directory {
         std::env::set_current_dir(dir)

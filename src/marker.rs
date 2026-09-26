@@ -10,12 +10,12 @@ use crate::manifest::{AddonName, ArchivePath};
 
 /// Written into every addon folder gdget installs; its presence is what makes the folder
 /// gdget's to replace or remove.
-pub const MARKER_FILE: &str = ".gdget.toml";
+pub(crate) const MARKER_FILE: &str = ".gdget.toml";
 
 const FORMAT: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Marker {
+pub(crate) struct Marker {
     /// The folder name it was installed as. A copied or renamed folder carries a marker
     /// naming another addon and must not be treated as gdget's.
     pub name: AddonName,
@@ -28,7 +28,7 @@ pub struct Marker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Change {
+pub(crate) enum Change {
     Modified(String),
     Added(String),
     Removed(String),
@@ -45,7 +45,7 @@ impl std::fmt::Display for Change {
 }
 
 impl Marker {
-    pub fn new(
+    pub(crate) fn new(
         name: &AddonName,
         url: &str,
         sha256: Sha256,
@@ -65,7 +65,7 @@ impl Marker {
     }
 
     /// Reads the marker in `addon_dir`; `None` means gdget did not install this folder.
-    pub fn read(addon_dir: &Path) -> Result<Option<Self>> {
+    pub(crate) fn read(addon_dir: &Path) -> Result<Option<Self>> {
         let path = addon_dir.join(MARKER_FILE);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -109,7 +109,7 @@ impl Marker {
         })
     }
 
-    pub fn write(&self, addon_dir: &Path) -> Result<()> {
+    pub(crate) fn write(&self, addon_dir: &Path) -> Result<()> {
         let mut doc = DocumentMut::new();
         doc.decor_mut()
             .set_prefix("# Written by gdget to track this install. Do not edit.\n");
@@ -130,7 +130,7 @@ impl Marker {
 
     /// Compares `addon_dir` with what was installed, ignoring files Godot and the OS
     /// generate there.
-    pub fn changes(&self, addon_dir: &Path) -> Result<Vec<Change>> {
+    pub(crate) fn changes(&self, addon_dir: &Path) -> Result<Vec<Change>> {
         let mut on_disk = BTreeMap::new();
         collect_files(addon_dir, "", &mut on_disk)?;
         let mut changes = Vec::new();

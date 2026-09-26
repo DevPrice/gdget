@@ -11,7 +11,7 @@ use crate::manifest::{ArchivePath, is_reserved_on_windows};
 
 /// A file written by [`Archive::extract`], relative to the destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtractedFile {
+pub(crate) struct ExtractedFile {
     /// `/`-separated path relative to the installed addon folder.
     pub path: String,
     pub sha256: Sha256,
@@ -20,7 +20,7 @@ pub struct ExtractedFile {
 /// Caps on what one archive may expand to, so a zip bomb fails instead of filling the
 /// disk. Sizes are counted as bytes are written, not taken from the zip's headers.
 #[derive(Debug, Clone, Copy)]
-pub struct Limits {
+pub(crate) struct Limits {
     pub max_entries: usize,
     pub max_bytes: u64,
 }
@@ -34,7 +34,7 @@ impl Default for Limits {
     }
 }
 
-pub struct Archive {
+pub(crate) struct Archive {
     path: PathBuf,
     zip: ZipArchive<File>,
     /// Validated path segments of each entry, indexed like the zip's entries.
@@ -44,11 +44,11 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         Self::open_with_limits(path, Limits::default())
     }
 
-    pub fn open_with_limits(path: &Path, limits: Limits) -> Result<Self> {
+    pub(crate) fn open_with_limits(path: &Path, limits: Limits) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         let mut zip = ZipArchive::new(file)
             .with_context(|| format!("{} is not a valid zip archive", path.display()))?;
@@ -84,12 +84,16 @@ impl Archive {
         })
     }
 
-    pub fn tree(&self) -> &EntryTree {
+    pub(crate) fn tree(&self) -> &EntryTree {
         &self.tree
     }
 
     /// Extracts the contents of the `prefix` folder into `dest`, which must not exist yet.
-    pub fn extract(&mut self, prefix: &ArchivePath, dest: &Path) -> Result<Vec<ExtractedFile>> {
+    pub(crate) fn extract(
+        &mut self,
+        prefix: &ArchivePath,
+        dest: &Path,
+    ) -> Result<Vec<ExtractedFile>> {
         std::fs::create_dir(dest).with_context(|| format!("cannot create {}", dest.display()))?;
         let mut extracted = Vec::new();
         let mut remaining = self.limits.max_bytes;

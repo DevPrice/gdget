@@ -8,7 +8,7 @@ const GODOT_PROJECT_FILE: &str = "project.godot";
 
 /// A Godot project root: the directory holding `addons.toml` and/or `project.godot`.
 #[derive(Debug, Clone)]
-pub struct Project {
+pub(crate) struct Project {
     root: PathBuf,
 }
 
@@ -16,7 +16,7 @@ impl Project {
     /// Finds the nearest ancestor of `start` (inclusive) containing `addons.toml` or
     /// `project.godot`. Stopping at the first of either keeps a game nested in a larger
     /// repo from picking up an unrelated manifest further up.
-    pub fn discover(start: &Path) -> Result<Self> {
+    pub(crate) fn discover(start: &Path) -> Result<Self> {
         for dir in start.ancestors() {
             if dir.join(MANIFEST_FILE).is_file() || dir.join(GODOT_PROJECT_FILE).is_file() {
                 return Ok(Self {
@@ -30,33 +30,33 @@ impl Project {
         )
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn manifest_path(&self) -> PathBuf {
+    pub(crate) fn manifest_path(&self) -> PathBuf {
         self.root.join(MANIFEST_FILE)
     }
 
-    pub fn overrides_path(&self) -> PathBuf {
+    pub(crate) fn overrides_path(&self) -> PathBuf {
         self.root.join(OVERRIDES_FILE)
     }
 
-    pub fn addons_dir(&self) -> PathBuf {
+    pub(crate) fn addons_dir(&self) -> PathBuf {
         self.root.join("addons")
     }
 
     /// gdget's working directory for staging, trash and link records. It must be inside
     /// the project so renames into `addons/` stay on one volume and are atomic.
-    pub fn state_dir(&self) -> PathBuf {
+    pub(crate) fn state_dir(&self) -> PathBuf {
         self.root.join(".gdget")
     }
 
-    pub fn has_manifest(&self) -> bool {
+    pub(crate) fn has_manifest(&self) -> bool {
         self.manifest_path().is_file()
     }
 
-    pub fn has_godot_project(&self) -> bool {
+    pub(crate) fn has_godot_project(&self) -> bool {
         self.root.join(GODOT_PROJECT_FILE).is_file()
     }
 }

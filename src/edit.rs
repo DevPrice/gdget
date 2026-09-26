@@ -13,7 +13,7 @@ use crate::state::State;
 use crate::sync::{self, Installed, SyncOptions, inspect, label};
 
 /// Pins `url` as addon `name` (re-pinning it if already present) and installs it.
-pub fn add(
+pub(crate) fn add(
     project: &Project,
     name: &AddonName,
     url: &str,
@@ -81,7 +81,7 @@ pub fn add(
 }
 
 /// Removes addon `name` from the manifest and uninstalls it.
-pub fn remove(project: &Project, name: &AddonName, reporter: Reporter) -> Result<Outcome> {
+pub(crate) fn remove(project: &Project, name: &AddonName, reporter: Reporter) -> Result<Outcome> {
     if !project.has_manifest() {
         bail!("no {MANIFEST_FILE} in {}", project.root().display());
     }

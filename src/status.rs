@@ -14,7 +14,7 @@ struct Row {
     state: String,
 }
 
-pub fn status(project: &Project) -> Result<Outcome> {
+pub(crate) fn status(project: &Project) -> Result<Outcome> {
     let manifest = if project.has_manifest() {
         Manifest::load(&project.manifest_path())?
     } else {

@@ -9,13 +9,13 @@ use crate::manifest::{AddonName, ArchivePath};
 const IGNORED_ROOT_ENTRIES: &[&str] = &["__MACOSX"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
+pub(crate) struct Entry {
     pub name: String,
     pub is_dir: bool,
 }
 
 /// A read-only view of an archive's or directory's folder structure.
-pub trait Tree {
+pub(crate) trait Tree {
     /// Entries directly inside `dir`, sorted by name; empty if `dir` does not exist.
     fn children(&self, dir: &[String]) -> Vec<Entry>;
 
@@ -29,20 +29,20 @@ pub trait Tree {
 
 /// An in-memory tree built from archive entry paths.
 #[derive(Debug, Default, Clone)]
-pub struct EntryTree {
+pub(crate) struct EntryTree {
     dirs: BTreeSet<Vec<String>>,
     files: BTreeSet<Vec<String>>,
 }
 
 impl EntryTree {
-    pub fn add_file(&mut self, path: &[String]) {
+    pub(crate) fn add_file(&mut self, path: &[String]) {
         if let Some((_, parent)) = path.split_last() {
             self.add_dir(parent);
             self.files.insert(path.to_vec());
         }
     }
 
-    pub fn add_dir(&mut self, path: &[String]) {
+    pub(crate) fn add_dir(&mut self, path: &[String]) {
         for len in 1..=path.len() {
             self.dirs.insert(path[..len].to_vec());
         }
@@ -76,12 +76,12 @@ impl Tree for EntryTree {
 
 /// A tree over a directory on disk, used for local overrides.
 #[derive(Debug, Clone)]
-pub struct DirTree {
+pub(crate) struct DirTree {
     root: PathBuf,
 }
 
 impl DirTree {
-    pub fn new(root: &Path) -> Self {
+    pub(crate) fn new(root: &Path) -> Self {
         Self {
             root: root.to_owned(),
         }
@@ -125,7 +125,7 @@ impl Tree for DirTree {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
+pub(crate) struct Resolved {
     pub path: ArchivePath,
     pub warning: Option<String>,
 }
@@ -140,7 +140,7 @@ pub struct Resolved {
 /// 4. The only folder under `addons/`, with a warning because it gets renamed.
 ///
 /// Anything else is an error that lists what was found and asks for `path`.
-pub fn resolve(
+pub(crate) fn resolve(
     tree: &dyn Tree,
     name: &AddonName,
     explicit: Option<&ArchivePath>,

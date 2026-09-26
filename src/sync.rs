@@ -17,7 +17,7 @@ use crate::report::Reporter;
 use crate::state::State;
 
 #[derive(Debug, Clone, Default)]
-pub struct SyncOptions {
+pub(crate) struct SyncOptions {
     pub force: bool,
     pub check: bool,
     /// Sync only this addon, leaving every other folder in `addons/` alone.
@@ -41,7 +41,7 @@ fn desired<'a>(
 
 /// What is at `addons/<name>` right now.
 #[derive(Debug)]
-pub enum Installed {
+pub(crate) enum Installed {
     Missing,
     Copy(Marker),
     Link {
@@ -52,7 +52,7 @@ pub enum Installed {
     Unowned,
 }
 
-pub fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Installed> {
+pub(crate) fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Installed> {
     let meta = match dir.symlink_metadata() {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Installed::Missing),
@@ -76,13 +76,13 @@ pub fn inspect(dir: &Path, name: &AddonName, state: &State) -> Result<Installed>
 }
 
 /// Whether an installed copy is exactly what the manifest pins.
-pub fn is_current(marker: &Marker, addon: &Addon) -> bool {
+pub(crate) fn is_current(marker: &Marker, addon: &Addon) -> bool {
     let Source::Url { sha256, .. } = &addon.source;
     marker.sha256 == *sha256 && addon.path.as_ref().is_none_or(|path| *path == marker.path)
 }
 
 /// Resolves an override entry to the absolute folder to link.
-pub fn resolve_override(
+pub(crate) fn resolve_override(
     project: &Project,
     name: &AddonName,
     dir: &Path,
@@ -112,7 +112,7 @@ pub fn resolve_override(
     Ok((source, resolved.warning))
 }
 
-pub fn same_dir(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
@@ -148,7 +148,7 @@ enum Step {
     Blocked(String),
 }
 
-pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Result<Outcome> {
+pub(crate) fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Result<Outcome> {
     if !project.has_manifest() {
         bail!(
             "no addons.toml in {}; create one with `gdget add <name> <url>`",
@@ -505,7 +505,7 @@ fn report_check(steps: &BTreeMap<AddonName, Step>, reporter: Reporter) -> Outcom
     }
 }
 
-pub fn label(name: &AddonName, addon: &Addon) -> String {
+pub(crate) fn label(name: &AddonName, addon: &Addon) -> String {
     let Source::Url { sha256, .. } = &addon.source;
     match &addon.version {
         Some(version) => format!("{name} {version} ({})", sha256.short()),
@@ -513,7 +513,7 @@ pub fn label(name: &AddonName, addon: &Addon) -> String {
     }
 }
 
-pub fn summarize(changes: &[Change]) -> String {
+pub(crate) fn summarize(changes: &[Change]) -> String {
     const SHOWN: usize = 5;
     let mut text = changes
         .iter()

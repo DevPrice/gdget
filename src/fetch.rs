@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,10 +25,6 @@ impl Cache {
         cache_dir_from(|key| std::env::var_os(key))
             .map(Self::new)
             .ok_or_else(|| anyhow!("cannot find a cache directory; set GDGET_CACHE_DIR"))
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     pub fn archive_path(&self, sha256: &Sha256) -> PathBuf {

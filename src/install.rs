@@ -11,7 +11,7 @@ const TRASH_PREFIX: &str = "old-";
 
 /// gdget's scratch space under `.gdget/`, next to `addons/` so every rename between them
 /// stays on one volume and is atomic. Holds an exclusive lock on the project while alive.
-pub struct Workspace {
+pub(crate) struct Workspace {
     staging: PathBuf,
     trash: PathBuf,
     _lock: File,
@@ -19,13 +19,13 @@ pub struct Workspace {
 
 /// A folder being prepared for install. Dropping it without [`Workspace::swap_in`]
 /// deletes it, so failed installs leave nothing behind.
-pub struct Staged {
+pub(crate) struct Staged {
     shell: TempDir,
 }
 
 impl Staged {
     /// Where the new addon contents go. Does not exist until the caller creates it.
-    pub fn path(&self) -> PathBuf {
+    pub(crate) fn path(&self) -> PathBuf {
         self.shell.path().join("addon")
     }
 }
@@ -34,7 +34,7 @@ impl Workspace {
     /// Creates `.gdget/` if needed, locks the project against other gdget runs, and
     /// clears what an interrupted run left behind. Rescued folders are kept for the user
     /// to recover.
-    pub fn prepare(state_dir: &Path) -> Result<Self> {
+    pub(crate) fn prepare(state_dir: &Path) -> Result<Self> {
         ensure_real_dir(state_dir)?;
         let lock = lock_project(state_dir)?;
         let workspace = Self {
@@ -65,7 +65,7 @@ impl Workspace {
         Ok(workspace)
     }
 
-    pub fn stage(&self, name: &str) -> Result<Staged> {
+    pub(crate) fn stage(&self, name: &str) -> Result<Staged> {
         let shell = tempfile::Builder::new()
             .prefix(&format!("{name}-"))
             .tempdir_in(&self.staging)
@@ -75,7 +75,7 @@ impl Workspace {
 
     /// Replaces `target` with the staged folder. Either the new folder is in place, or
     /// `target` is unchanged and an error explains why.
-    pub fn swap_in(&self, staged: Staged, target: &Path) -> Result<()> {
+    pub(crate) fn swap_in(&self, staged: Staged, target: &Path) -> Result<()> {
         self.replace(target, || {
             std::fs::rename(staged.path(), target)
                 .with_context(|| format!("cannot install {}", target.display()))
@@ -83,13 +83,13 @@ impl Workspace {
     }
 
     /// Replaces `target` with a link to `source`, with the same guarantee as `swap_in`.
-    pub fn link_in(&self, source: &Path, target: &Path) -> Result<()> {
+    pub(crate) fn link_in(&self, source: &Path, target: &Path) -> Result<()> {
         self.replace(target, || link::create(source, target))
     }
 
     /// Removes `target` (for a link, only the link), or leaves it untouched and explains
     /// why not.
-    pub fn remove(&self, target: &Path) -> Result<()> {
+    pub(crate) fn remove(&self, target: &Path) -> Result<()> {
         self.take_old(target).map(drop)
     }
 
@@ -174,7 +174,7 @@ impl Workspace {
 /// Creates `dir` if it is missing and refuses anything but a real directory there. A
 /// symlink or junction committed in place of `addons/` or `.gdget/` would otherwise
 /// redirect gdget's writes and deletes outside the project.
-pub fn ensure_real_dir(dir: &Path) -> Result<()> {
+pub(crate) fn ensure_real_dir(dir: &Path) -> Result<()> {
     match dir.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => bail!(
             "{} is a link; gdget only writes to a real folder there. Replace the link with \

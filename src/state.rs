@@ -11,13 +11,13 @@ const STATE_FILE: &str = "state.toml";
 /// What gdget remembers about a project outside the addon folders: the override links it
 /// created. Links can't carry a marker without writing into the linked dev folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct State {
+pub(crate) struct State {
     /// Addon name to the absolute directory its link points at.
     pub links: BTreeMap<AddonName, PathBuf>,
 }
 
 impl State {
-    pub fn load(state_dir: &Path) -> Result<Self> {
+    pub(crate) fn load(state_dir: &Path) -> Result<Self> {
         let path = state_dir.join(STATE_FILE);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -44,7 +44,7 @@ impl State {
         Ok(state)
     }
 
-    pub fn save(&self, state_dir: &Path) -> Result<()> {
+    pub(crate) fn save(&self, state_dir: &Path) -> Result<()> {
         let mut doc = DocumentMut::new();
         doc.decor_mut()
             .set_prefix("# Written by gdget. Do not edit.\n");

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each tests/*.rs crate uses a different subset")]
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use gdget::digest::Sha256;
 
 /// Builds a zip archive in memory from `(path, contents)` pairs.
-pub fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {
+pub(crate) fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for (path, contents) in files {
         zip.start_file(*path, zip::write::SimpleFileOptions::default())
@@ -20,14 +20,14 @@ pub fn zip_bytes(files: &[(&str, &str)]) -> Vec<u8> {
 }
 
 /// A Godot project, a private archive cache and a fixture server for one test.
-pub struct Fixture {
+pub(crate) struct Fixture {
     pub project: tempfile::TempDir,
     pub cache: tempfile::TempDir,
     pub server: TestServer,
 }
 
 impl Fixture {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("project.godot"), "").unwrap();
         Self {
@@ -37,37 +37,37 @@ impl Fixture {
         }
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         self.project.path()
     }
 
-    pub fn addon(&self, name: &str) -> PathBuf {
+    pub(crate) fn addon(&self, name: &str) -> PathBuf {
         self.root().join("addons").join(name)
     }
 
     /// Serves a zip of `files` at `/<file>` and returns a manifest entry pinning it.
-    pub fn publish(&self, name: &str, file: &str, files: &[(&str, &str)]) -> String {
+    pub(crate) fn publish(&self, name: &str, file: &str, files: &[(&str, &str)]) -> String {
         let bytes = zip_bytes(files);
         let sha256 = Sha256::of_bytes(&bytes);
         let url = self.server.serve(&format!("/{file}"), bytes);
         format!("[addons.{name}]\nurl = \"{url}\"\nsha256 = \"{sha256}\"\n")
     }
 
-    pub fn write_manifest(&self, entries: &[&str]) {
+    pub(crate) fn write_manifest(&self, entries: &[&str]) {
         std::fs::write(self.root().join("addons.toml"), entries.join("\n")).unwrap();
     }
 
-    pub fn write(&self, relative: &str, contents: &str) {
+    pub(crate) fn write(&self, relative: &str, contents: &str) {
         let path = self.root().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
 
-    pub fn read(&self, relative: &str) -> String {
+    pub(crate) fn read(&self, relative: &str) -> String {
         std::fs::read_to_string(self.root().join(relative)).unwrap()
     }
 
-    pub fn gdget(&self) -> assert_cmd::Command {
+    pub(crate) fn gdget(&self) -> assert_cmd::Command {
         let mut cmd = assert_cmd::Command::cargo_bin("gdget").unwrap();
         cmd.current_dir(self.root())
             .env("GDGET_CACHE_DIR", self.cache.path())
@@ -79,13 +79,13 @@ impl Fixture {
 }
 
 /// Output of a finished command, for asserting on text.
-pub struct Run {
+pub(crate) struct Run {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
 }
 
-pub fn run(cmd: &mut assert_cmd::Command) -> Run {
+pub(crate) fn run(cmd: &mut assert_cmd::Command) -> Run {
     let output = cmd.output().unwrap();
     Run {
         code: output.status.code().unwrap(),
@@ -105,13 +105,13 @@ impl std::fmt::Debug for Run {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecordedRequest {
+pub(crate) struct RecordedRequest {
     pub path: String,
     pub authorization: Option<String>,
 }
 
 /// A local HTTP server for fixture archives, so tests never touch the network.
-pub struct TestServer {
+pub(crate) struct TestServer {
     server: Arc<tiny_http::Server>,
     base: String,
     routes: Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -120,7 +120,7 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());
         let routes = Arc::new(Mutex::new(HashMap::<String, Vec<u8>>::new()));
@@ -159,7 +159,7 @@ impl TestServer {
     }
 
     /// Serves `body` at `path` (e.g. "/slang.zip") and returns its full URL.
-    pub fn serve(&self, path: &str, body: impl Into<Vec<u8>>) -> String {
+    pub(crate) fn serve(&self, path: &str, body: impl Into<Vec<u8>>) -> String {
         self.routes
             .lock()
             .unwrap()
@@ -167,11 +167,11 @@ impl TestServer {
         self.url(path)
     }
 
-    pub fn url(&self, path: &str) -> String {
+    pub(crate) fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
 
-    pub fn requests(&self) -> Vec<RecordedRequest> {
+    pub(crate) fn requests(&self) -> Vec<RecordedRequest> {
         self.requests.lock().unwrap().clone()
     }
 }
