@@ -170,6 +170,9 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
         return Ok(report_check(&steps, reporter));
     }
 
+    // Every archive is fetched and verified before addons/ is touched, and any failure
+    // here aborts the run; failures while applying are per addon instead, since each
+    // swap is atomic on its own.
     let fetcher = Fetcher::new(Cache::from_env()?, reporter);
     let mut archives = BTreeMap::new();
     for (name, step) in &steps {
@@ -239,6 +242,8 @@ pub fn sync(project: &Project, options: SyncOptions, reporter: Reporter) -> Resu
                 failed = true;
             }
         }
+        // Saved per step so a link created before a later failure or an interrupted run
+        // is still recognized as gdget's on the next sync.
         state.save(&project.state_dir())?;
     }
 

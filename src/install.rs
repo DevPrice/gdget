@@ -140,13 +140,19 @@ impl Workspace {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", target.display())),
         };
-        if let Some(locked) = find_locked_file(target) {
-            return Err(in_use(&locked));
-        }
         if meta.file_type().is_symlink() {
+            // Unlinking never deletes the dev build, but the editor would keep running the
+            // library it loaded through the link while a different copy is installed at
+            // the same res:// path, so a loaded library blocks this too.
+            if let Some(locked) = find_locked_file(target) {
+                return Err(in_use(&locked));
+            }
             let source = link::target(target)?;
             link::remove(target)?;
             return Ok(Some(Old::Link(source)));
+        }
+        if let Some(locked) = find_locked_file(target) {
+            return Err(in_use(&locked));
         }
         let slot = tempfile::Builder::new()
             .prefix(TRASH_PREFIX)
