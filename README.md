@@ -2,10 +2,12 @@
 
 gdget ("gadget") installs pinned Godot 4 addons into a project from a committed
 manifest. Use it for addons that ship prebuilt native libraries, such as GDExtensions,
-so you commit a small `addons.toml` file instead of the binaries.
+so you commit a small `addons.toml` file instead of the binaries. It also installs
+GDScript addons straight from git repositories, pinned to a commit.
 
-gdget verifies every download against a pinned sha256 hash, caches archives per user,
-and replaces addon folders atomically. It never touches folders it didn't install.
+gdget verifies every download against a pinned sha256 hash or commit, caches downloads
+per user, and replaces addon folders atomically. It never touches folders it didn't
+install.
 
 ## Install
 
@@ -32,10 +34,15 @@ cargo install gdget --locked
     Replace `PUBLISHER/ASSET` with the part of the asset's store address after
     `/asset/`, such as `devprice/godot-slang`. To add a specific release, append
     `@VERSION`, as in `devprice/godot-slang@v6.0.0`. To add an addon from any other
-    site, pass the link to its zip instead.
+    site, pass the link to its zip instead. To add one from a git repository, pass the
+    repository's clone URL, and add `--path FOLDER` if it holds several addons:
 
-    gdget downloads the addon, pins its hash in `addons.toml`, and installs it to
-    `addons/NAME/`.
+    ```sh
+    gdget add https://github.com/DevPrice/godot-addons.git --path inventory
+    ```
+
+    gdget downloads the addon, pins its hash or commit in `addons.toml`, and installs it
+    to `addons/NAME/`.
 
 2.  Add the installed addon and gdget's working files to `.gitignore`:
 

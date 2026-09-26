@@ -26,18 +26,22 @@ A project without `addons.toml` can still sync if it has local overrides.
 
 ## gdget add
 
-Downloads an addon, pins its hash and folder in `addons.toml`, and installs it.
+Downloads an addon, pins its hash or commit and its folder in `addons.toml`, and
+installs it.
 
 ```sh
-gdget add [NAME] SOURCE [--path PATH] [--version-label LABEL]
+gdget add [NAME] SOURCE [--git] [--ref REF] [--path PATH] [--version-label LABEL]
 ```
 
 Replace the following:
 
 - `NAME`: optional. The install folder name. The addon installs to `addons/NAME/`. Use
-  ASCII letters, digits, `-`, `_`, and `.`. If you omit it, gdget uses the name of the
-  archive's only folder under `addons/`. For an Asset Store asset with no such folder, it
-  uses the asset name.
+  ASCII letters, digits, `-`, `_`, and `.`. If you omit it, gdget uses the first of
+  these that applies:
+  - the last folder of `PATH`
+  - the name of the source's only folder under `addons/`
+  - the asset name, for an Asset Store asset
+  - the repository name, for a git repository
 - `SOURCE`: where to get the addon. It's one of the following:
   - An `https://` link to the addon's zip. gdget warns if you use `http://`.
   - An asset from the [Godot Asset Store](https://store.godotengine.org), written
@@ -45,8 +49,15 @@ Replace the following:
     `store.godotengine.org/asset/PUBLISHER/ASSET/`. If you omit `@VERSION`, gdget uses
     the latest stable release. The leading `v` in a version is optional, so `@6.0.0`
     matches `v6.0.0`.
-- `PATH`: optional. The folder inside the archive to install, if gdget can't detect it.
-  For details, see [How gdget finds the addon folder](manifest.md#how-gdget-finds-the-addon-folder).
+  - A git repository: an `https://` URL ending in `.git`, an `ssh://` URL, or an address
+    such as `git@github.com:DevPrice/godot-addons.git`. For a repository URL without
+    `.git`, add `--git`. Installing from a repository needs `git` on your `PATH`.
+- `REF`: optional, for a git repository. The branch, tag, or full commit hash to
+  install. If you omit it, gdget uses the repository's default branch. gdget pins the
+  commit that `REF` points at now and records `REF` next to it.
+- `PATH`: optional. The folder inside the archive or repository to install, if gdget
+  can't detect it. For details, see
+  [How gdget finds the addon folder](manifest.md#how-gdget-finds-the-addon-folder).
 - `LABEL`: optional. A version label that `status` displays. gdget doesn't use it to
   resolve anything. For an Asset Store asset, it defaults to the release's version.
 
@@ -60,8 +71,17 @@ gdget add devprice/godot-slang@v6.0.0
 gdget pins an Asset Store asset by the release's download link on the store, so `sync`
 doesn't depend on the store's API.
 
-To upgrade an addon, run `gdget add` again with the new URL or version. To upgrade an
-Asset Store asset to its latest stable release, omit the version.
+To install one addon from a repository that holds several, as folders at its root,
+pass the folder as `PATH`. The addon is named after the folder:
+
+```sh
+gdget add https://github.com/DevPrice/godot-addons.git --path inventory
+```
+
+To upgrade an addon, run `gdget add` again with the new URL, version, or `REF`. To
+upgrade an Asset Store asset to its latest stable release, omit the version. To move a
+git addon to the latest commit of its branch, run `gdget add` again with the same
+`REF`.
 
 ## gdget remove
 
@@ -141,7 +161,8 @@ Git would commit.
 |---|---|
 | `GDGET_CACHE_DIR` | The download cache folder. Defaults to `%LOCALAPPDATA%\gdget` on Windows, `$XDG_CACHE_HOME/gdget` if that variable is set, `~/Library/Caches/gdget` on macOS, and `~/.cache/gdget` otherwise. |
 | `GDGET_STORE_URL` | The Asset Store that `add` looks up assets in. Defaults to `https://store.godotengine.org`. |
-| `GITHUB_TOKEN` | A token sent to GitHub to raise rate limits. gdget sends it only over HTTPS to `github.com`, `api.github.com`, and `*.githubusercontent.com`, and never forwards it on redirects. |
+| `GITHUB_TOKEN` | A token sent to GitHub to raise rate limits and to fetch private repositories. gdget sends it only over HTTPS to `github.com`, `api.github.com`, and `*.githubusercontent.com`, and never forwards it on redirects. In GitHub Actions, the default token can read only the workflow's own repository, so fetching another private repository needs a personal access token. |
+| `GIT_ALLOW_PROTOCOL` | The transports git may use to fetch repositories. If it isn't set, gdget allows only `https` and `ssh`. |
 | `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Standard proxy settings. |
 | `NO_COLOR` | Turns off colored output. Output is also uncolored when it isn't a terminal. |
 

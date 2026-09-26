@@ -11,7 +11,7 @@ Settled in the interview (2026-09-25):
 | Topic | Decision |
 |---|---|
 | Language | Rust (edition 2024). Uses crates, because the Rust standard library has no HTTP, zip or sha256 |
-| Manifest | `addons.toml`, one `[addons.<name>]` table per addon. The source type comes from which key is present: `url` now, `git` later |
+| Manifest | `addons.toml`, one `[addons.<name>]` table per addon. The source type comes from which key is present: `url` or `git` (see [Git sources](#git-sources)) |
 | Override file | `addons.local.toml`, gitignored, with an `[overrides]` table |
 | Locally modified addon | Skip it, warn, sync the others, then exit 1. `sync --force` overwrites |
 | Commands | `sync [--force] [--check]`, `add <name> <url>` (re-pins if the name exists), `remove <name>`, `status` |
@@ -129,13 +129,30 @@ directory, and tries these rules in order:
   - Exit codes: 0 for success, 1 for any failure or for drift under `--check`, 2 for usage
     errors.
 
+### Git sources
+
+Settled in a second interview (2026-09-26):
+
+| Topic | Decision |
+|---|---|
+| Fetching | The system `git`, not `gix` or host archive zips. Each remote gets a bare repo in the cache. `git archive --format=zip` feeds the existing extract, layout, and marker code |
+| Manifest | `git`, `rev` (full commit hash, the pin), optional `ref` (what it was resolved from, for display and re-pinning). No `update` command yet |
+| Multi-addon repos | One entry per folder, chosen with `--path`. NAME defaults to the path's last folder |
+| CLI | `--git` and `--ref`. Without `--git`, URLs ending in `.git`, `ssh://`, and `USER@HOST:PATH` are git |
+| Layout | For git sources with nothing under `addons/`, the root is the addon, even without `plugin.cfg` |
+| Access | https and ssh with the user's git credentials, plus `GITHUB_TOKEN` for github.com |
+
+- **Pinning trusts git's object hash.** That is SHA-1 with collision detection, unless the
+  repository uses SHA-256. The marker still hashes every installed file with sha256 to
+  detect local changes.
+- **Submodules and Git LFS are out of scope**, because `git archive` omits them.
+
 ### Room for v2
 
 - **Per-platform filtering:** the resolver produces a list of files, and a filter stage can
   go between resolving and extracting.
-- **`git` source:** the source is an enum and the fetcher is a trait.
 
-Neither is built in v1.
+Not built yet.
 
 ## Crates
 
