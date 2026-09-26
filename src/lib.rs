@@ -1,4 +1,8 @@
 pub mod cli;
+pub mod digest;
+pub mod fsutil;
+pub mod manifest;
+pub mod project;
 pub mod report;
 
 use crate::cli::{Cli, Command};

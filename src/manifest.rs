@@ -1,0 +1,549 @@
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use anyhow::{Context, Result, anyhow, bail};
+use toml_edit::{DocumentMut, Item, Table, TableLike, value};
+
+use crate::digest::Sha256;
+
+pub const MANIFEST_FILE: &str = "addons.toml";
+pub const OVERRIDES_FILE: &str = "addons.local.toml";
+
+const NEWER_VERSION_HINT: &str = "it may need a newer version of gdget";
+
+/// An addon's install folder name: it installs to `addons/<name>/`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AddonName(String);
+
+impl AddonName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for AddonName {
+    type Err = anyhow::Error;
+
+    fn from_str(name: &str) -> Result<Self> {
+        let valid_chars = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if name.is_empty() || !valid_chars {
+            bail!("invalid addon name `{name}`: use ASCII letters, digits, `-`, `_` and `.`");
+        }
+        if name.starts_with('.') || name.ends_with('.') {
+            bail!("invalid addon name `{name}`: it cannot start or end with `.`");
+        }
+        if is_reserved_on_windows(name) {
+            bail!("invalid addon name `{name}`: it is a reserved file name on Windows");
+        }
+        Ok(Self(name.to_owned()))
+    }
+}
+
+impl fmt::Display for AddonName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Windows refuses these device names as folder names, with or without an extension.
+fn is_reserved_on_windows(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit())
+}
+
+/// A relative, `/`-separated folder inside an archive; no segments means the archive root.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArchivePath(Vec<String>);
+
+impl ArchivePath {
+    pub fn root() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn segments(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn join(&self, segment: &str) -> Self {
+        let mut segments = self.0.clone();
+        segments.push(segment.to_owned());
+        Self(segments)
+    }
+}
+
+impl FromStr for ArchivePath {
+    type Err = anyhow::Error;
+
+    fn from_str(path: &str) -> Result<Self> {
+        if path.contains('\\') {
+            bail!("invalid path `{path}`: use `/` as the separator");
+        }
+        if path.starts_with('/') {
+            bail!("invalid path `{path}`: it must be relative to the archive root");
+        }
+        let trimmed = path.trim_end_matches('/');
+        let mut segments = Vec::new();
+        for segment in trimmed.split('/') {
+            match segment {
+                "." => {}
+                "" if trimmed.is_empty() => {}
+                "" | ".." => bail!("invalid path `{path}`: empty or `..` segment"),
+                _ => segments.push(segment.to_owned()),
+            }
+        }
+        Ok(Self(segments))
+    }
+}
+
+impl fmt::Display for ArchivePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            f.write_str(".")
+        } else {
+            f.write_str(&self.0.join("/"))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Addon {
+    /// Display-only label; the pin is the source's hash.
+    pub version: Option<String>,
+    pub source: Source,
+    pub path: Option<ArchivePath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Url { url: String, sha256: Sha256 },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Manifest {
+    pub addons: BTreeMap<AddonName, Addon>,
+}
+
+impl Manifest {
+    pub fn load(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        Self::parse(&text).with_context(|| format!("invalid {}", path.display()))
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let doc: DocumentMut = text.parse()?;
+        let mut manifest = Self::default();
+        for (key, item) in doc.iter() {
+            if key != "addons" {
+                bail!("unknown top-level key `{key}` ({NEWER_VERSION_HINT})");
+            }
+            let addons = item
+                .as_table_like()
+                .ok_or_else(|| anyhow!("`addons` must be a table"))?;
+            for (name, item) in addons.iter() {
+                let addon = item
+                    .as_table_like()
+                    .ok_or_else(|| anyhow!("`addons.{name}` must be a table"))
+                    .and_then(|table| parse_addon(name, table));
+                manifest.addons.insert(name.parse()?, addon?);
+            }
+        }
+        Ok(manifest)
+    }
+}
+
+fn parse_addon(name: &str, table: &dyn TableLike) -> Result<Addon> {
+    let get = |key: &str| -> Result<Option<&str>> {
+        table
+            .get(key)
+            .map(|item| {
+                item.as_str()
+                    .ok_or_else(|| anyhow!("`addons.{name}.{key}` must be a string"))
+            })
+            .transpose()
+    };
+    if let Some((key, _)) = table
+        .iter()
+        .find(|(key, _)| !matches!(*key, "version" | "url" | "sha256" | "path"))
+    {
+        bail!("unknown key `addons.{name}.{key}` ({NEWER_VERSION_HINT})");
+    }
+    let url = get("url")?.ok_or_else(|| anyhow!("`addons.{name}` is missing `url`"))?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        bail!("`addons.{name}.url` must be an http(s) URL, got `{url}`");
+    }
+    let sha256 = get("sha256")?
+        .ok_or_else(|| {
+            anyhow!("`addons.{name}` is missing `sha256` (`gdget add` computes and pins it)")
+        })?
+        .parse()
+        .with_context(|| format!("invalid `addons.{name}.sha256`"))?;
+    let path = get("path")?
+        .map(str::parse)
+        .transpose()
+        .with_context(|| format!("invalid `addons.{name}.path`"))?;
+    Ok(Addon {
+        version: get("version")?.map(str::to_owned),
+        source: Source::Url {
+            url: url.to_owned(),
+            sha256,
+        },
+        path,
+    })
+}
+
+/// Local overrides from the gitignored `addons.local.toml`: addon name to a directory,
+/// relative to the project root, that is linked in place of the pinned archive.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overrides {
+    pub addons: BTreeMap<AddonName, PathBuf>,
+}
+
+impl Overrides {
+    /// Loads the overrides file; a missing file means no overrides.
+    pub fn load(path: &Path) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text).with_context(|| format!("invalid {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+        }
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let doc: DocumentMut = text.parse()?;
+        let mut overrides = Self::default();
+        for (key, item) in doc.iter() {
+            if key != "overrides" {
+                bail!("unknown top-level key `{key}` ({NEWER_VERSION_HINT})");
+            }
+            let table = item
+                .as_table_like()
+                .ok_or_else(|| anyhow!("`overrides` must be a table"))?;
+            for (name, item) in table.iter() {
+                let dir = item
+                    .as_str()
+                    .filter(|dir| !dir.is_empty())
+                    .ok_or_else(|| anyhow!("`overrides.{name}` must be a directory path"))?;
+                overrides.addons.insert(name.parse()?, PathBuf::from(dir));
+            }
+        }
+        Ok(overrides)
+    }
+}
+
+/// `addons.toml` opened for editing; comments and formatting outside the edited entry are
+/// preserved.
+pub struct ManifestFile {
+    path: PathBuf,
+    doc: DocumentMut,
+}
+
+impl ManifestFile {
+    /// Opens the manifest for editing; a missing file starts an empty one.
+    pub fn open(path: &Path) -> Result<Self> {
+        let doc = match std::fs::read_to_string(path) {
+            Ok(text) => {
+                Manifest::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
+                text.parse()?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            doc,
+        })
+    }
+
+    pub fn set(&mut self, name: &AddonName, addon: &Addon) {
+        let addons = self.doc.entry("addons").or_insert_with(|| {
+            let mut table = Table::new();
+            table.set_implicit(true);
+            Item::Table(table)
+        });
+        let addons = addons
+            .as_table_like_mut()
+            .expect("validated as a table when opened");
+        let entry = addons
+            .entry(name.as_str())
+            .or_insert_with(|| Item::Table(Table::new()));
+        let entry = entry
+            .as_table_like_mut()
+            .expect("validated as a table when opened");
+
+        let Source::Url { url, sha256 } = &addon.source;
+        set_or_remove(entry, "version", addon.version.clone());
+        entry.insert("url", value(url.as_str()));
+        entry.insert("sha256", value(sha256.to_string()));
+        set_or_remove(entry, "path", addon.path.as_ref().map(ToString::to_string));
+    }
+
+    /// Removes an addon's entry, returning whether it was present.
+    pub fn remove(&mut self, name: &AddonName) -> bool {
+        self.doc
+            .get_mut("addons")
+            .and_then(Item::as_table_like_mut)
+            .is_some_and(|addons| addons.remove(name.as_str()).is_some())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        crate::fsutil::write_atomic(&self.path, self.doc.to_string().as_bytes())
+            .with_context(|| format!("cannot write {}", self.path.display()))
+    }
+}
+
+fn set_or_remove(table: &mut dyn TableLike, key: &str, new: Option<String>) {
+    match new {
+        Some(new) => {
+            table.insert(key, value(new));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    fn name(s: &str) -> AddonName {
+        s.parse().unwrap()
+    }
+
+    fn manifest(text: &str) -> Result<Manifest> {
+        Manifest::parse(&text.replace("HASH", HASH))
+    }
+
+    fn error(result: Result<impl fmt::Debug>) -> String {
+        format!("{:#}", result.unwrap_err())
+    }
+
+    #[test]
+    fn parses_full_entry_and_inline_tables() {
+        let parsed = manifest(
+            r#"
+            [addons.godot-slang]
+            version = "0.4.1"
+            url = "https://example.com/slang.zip"
+            sha256 = "HASH"
+            path = "addons/godot-slang/"
+
+            [addons]
+            godot-verse = { url = "http://127.0.0.1/verse.zip", sha256 = "HASH" }
+            "#,
+        )
+        .unwrap();
+        let slang = &parsed.addons[&name("godot-slang")];
+        assert_eq!(slang.version.as_deref(), Some("0.4.1"));
+        assert_eq!(slang.path, Some("addons/godot-slang".parse().unwrap()));
+        let verse = &parsed.addons[&name("godot-verse")];
+        assert_eq!(verse.path, None);
+        assert_eq!(
+            verse.source,
+            Source::Url {
+                url: "http://127.0.0.1/verse.zip".into(),
+                sha256: HASH.parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn empty_manifest_has_no_addons() {
+        assert!(manifest("").unwrap().addons.is_empty());
+    }
+
+    #[test]
+    fn unknown_keys_suggest_a_newer_gdget() {
+        let err = error(manifest(
+            "[addons.a]\nurl = \"https://x/a.zip\"\nsha256 = \"HASH\"\nplatforms = []",
+        ));
+        assert!(err.contains("unknown key `addons.a.platforms`"), "{err}");
+        assert!(err.contains("newer version of gdget"), "{err}");
+
+        let err = error(manifest("min_gdget = \"0.2\""));
+        assert!(err.contains("unknown top-level key `min_gdget`"), "{err}");
+    }
+
+    #[test]
+    fn missing_or_malformed_fields_name_the_key() {
+        let err = error(manifest("[addons.a]\nsha256 = \"HASH\""));
+        assert!(err.contains("`addons.a` is missing `url`"), "{err}");
+
+        let err = error(manifest("[addons.a]\nurl = \"https://x/a.zip\""));
+        assert!(err.contains("missing `sha256`"), "{err}");
+
+        let err = error(manifest(
+            "[addons.a]\nurl = \"https://x\"\nsha256 = \"abc\"",
+        ));
+        assert!(err.contains("invalid `addons.a.sha256`"), "{err}");
+
+        let err = error(manifest(
+            "[addons.a]\nurl = \"file:///a.zip\"\nsha256 = \"HASH\"",
+        ));
+        assert!(err.contains("must be an http(s) URL"), "{err}");
+
+        let err = error(manifest("[addons.a]\nurl = 3\nsha256 = \"HASH\""));
+        assert!(err.contains("`addons.a.url` must be a string"), "{err}");
+    }
+
+    #[test]
+    fn addon_names_must_be_safe_folder_names() {
+        for good in ["godot-slang", "godot_verse", "gut.v9", "A1"] {
+            assert!(good.parse::<AddonName>().is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "..",
+            ".hidden",
+            "trailing.",
+            "a/b",
+            "a\\b",
+            "sp ace",
+            "con",
+            "Com1.x",
+        ] {
+            assert!(bad.parse::<AddonName>().is_err(), "{bad}");
+        }
+        assert!("console".parse::<AddonName>().is_ok());
+    }
+
+    #[test]
+    fn archive_paths_are_normalized_and_confined() {
+        assert_eq!(
+            "addons/x/".parse::<ArchivePath>().unwrap().to_string(),
+            "addons/x"
+        );
+        assert_eq!(
+            "./addons/x".parse::<ArchivePath>().unwrap().to_string(),
+            "addons/x"
+        );
+        assert_eq!(".".parse::<ArchivePath>().unwrap(), ArchivePath::root());
+        assert_eq!("".parse::<ArchivePath>().unwrap(), ArchivePath::root());
+        assert_eq!(ArchivePath::root().to_string(), ".");
+        for bad in ["../x", "a/../b", "/abs", "a\\b", "a//b"] {
+            assert!(bad.parse::<ArchivePath>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn overrides_parse_and_reject_other_tables() {
+        let overrides =
+            Overrides::parse("[overrides]\ngodot-slang = \"../slang/addons/godot-slang\"").unwrap();
+        assert_eq!(
+            overrides.addons[&name("godot-slang")],
+            PathBuf::from("../slang/addons/godot-slang")
+        );
+        assert!(Overrides::parse("[addons]").is_err());
+        assert!(Overrides::parse("[overrides]\na = \"\"").is_err());
+    }
+
+    #[test]
+    fn missing_overrides_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = Overrides::load(&dir.path().join(OVERRIDES_FILE)).unwrap();
+        assert!(overrides.addons.is_empty());
+    }
+
+    #[test]
+    fn editing_preserves_comments_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        std::fs::write(
+            &path,
+            format!(
+                "# Pinned addons for this game.\n\n\
+                 [addons.keep] # stays as-is\n\
+                 url = \"https://x/keep.zip\"\n\
+                 sha256 = \"{HASH}\"\n\n\
+                 [addons.gone]\n\
+                 url = \"https://x/gone.zip\"\n\
+                 sha256 = \"{HASH}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let added = Addon {
+            version: Some("1.0".into()),
+            source: Source::Url {
+                url: "https://x/new.zip".into(),
+                sha256: HASH.parse().unwrap(),
+            },
+            path: Some("addons/new".parse().unwrap()),
+        };
+        let mut file = ManifestFile::open(&path).unwrap();
+        file.set(&name("new"), &added);
+        assert!(file.remove(&name("gone")));
+        assert!(!file.remove(&name("never-there")));
+        file.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# Pinned addons for this game."), "{text}");
+        assert!(text.contains("[addons.keep] # stays as-is"), "{text}");
+        assert!(!text.contains("gone"), "{text}");
+        let reparsed = Manifest::parse(&text).unwrap();
+        assert_eq!(reparsed.addons.len(), 2);
+        assert_eq!(reparsed.addons[&name("new")], added);
+    }
+
+    #[test]
+    fn repinning_updates_entry_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        std::fs::write(
+            &path,
+            format!(
+                "[addons.a]\nversion = \"1\" # old\nurl = \"https://x/1.zip\"\n\
+                 sha256 = \"{HASH}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let mut file = ManifestFile::open(&path).unwrap();
+        let repinned = Addon {
+            version: None,
+            source: Source::Url {
+                url: "https://x/2.zip".into(),
+                sha256: HASH.parse().unwrap(),
+            },
+            path: Some(ArchivePath::root()),
+        };
+        file.set(&name("a"), &repinned);
+        file.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("version"), "{text}");
+        assert!(text.contains("path = \".\""), "{text}");
+        assert_eq!(Manifest::parse(&text).unwrap().addons[&name("a")], repinned);
+    }
+
+    #[test]
+    fn new_manifest_uses_dotted_table_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        let mut file = ManifestFile::open(&path).unwrap();
+        file.set(
+            &name("a"),
+            &Addon {
+                version: None,
+                source: Source::Url {
+                    url: "https://x/a.zip".into(),
+                    sha256: HASH.parse().unwrap(),
+                },
+                path: None,
+            },
+        );
+        file.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("[addons.a]\n"), "{text}");
+    }
+}
